@@ -1,0 +1,54 @@
+
+-- Inquiry Points--
+-----------------------
+-----------------------
+
+i. how to use Server bw cluster/ other ??
+
+a. JARDS NHR
+b. haicore
+-@me todo complete reg. 14/11/
+
+-----------------------
+
+ii. sample Reddit (June 10 - July 5, 2024, 4 weeks), 6 Subreddits, N= 520 (n=331)... politics, change my view
+
+- @me get access key!
+- github for code---
+
+- github: flowchart of sampling steps -> https://www.nature.com/articles/s41598-022-22034-1/figures/1
+
+(api restrictions on its way!!)
+-----------------------
+
+iii. OOD Test: sarcasm, time-shifted subreddits
+
+- sample benchmark data e.g. -> -> https://arxiv.org/abs/1704.05579 annotated dataset
+-> hence abstention again! when comment length is low etc
+
+
+
+-----------------------
+
+iv. confidence driven inference 
+
+-  in 2nd step of reddit sampling get low-confidence llm labels and label with 2 humans 10 %
+
+- (https://arxiv.org/abs/2408.15204)
+
+- https://github.com/kristinagligoric/cdi-tutorial
+
+------------------------
+
+v. compare multiple models/ prompt repeatedly
+
+https://arxiv.org/abs/2509.08825 -> Baumann llm hacking threat
+
+e.g. Mistral/ LLama/ Moonshot(Kimi k2- instruct gguf)
+
+--------------------------
+
+
+
+
+
