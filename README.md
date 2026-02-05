@@ -1,4 +1,11 @@
 # reddit-label
+
+The data used in this repo was downloaded from
+
+https://arctic-shift.photon-reddit.com/download-tool
+
+The subreddits were selected to include a range of subreddits with a strong discussion culture. The dates were matched to the dates used in the field experiment (10.06.2024 - 05.08.2024)
+
 # Reddit Sampling Pipeline (Posts Only)
 
 This repo contains a lightweight sampling pipeline for **Reddit submissions (posts)**.  
