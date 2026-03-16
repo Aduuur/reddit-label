@@ -4,9 +4,5 @@
     <content url="file://$MODULE_DIR$" />
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
-    <orderEntry type="module" module-name="data" />
-    <orderEntry type="module" module-name="Calibration" />
-    <orderEntry type="module" module-name="Playfull Checks" />
-    <orderEntry type="module" module-name="Sample_data" />
   </component>
 </module>
