@@ -17,11 +17,12 @@ import streamlit as st
 st.set_page_config(page_title="NDJSON Dashboard (Simple KPIs)", layout="wide")
 st.title("NDJSON Dashboard (Simple KPIs)")
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 
-DEFAULT_SUBMISSIONS_PATH = str(BASE_DIR / "sampled.ndjson")
-DEFAULT_LABELS_PATH = str(BASE_DIR / "labels_3000.ndjson")
-DEFAULT_THREAD_PATH = str(BASE_DIR / "thread_metrics.ndjson")
+#DEFAULT_SUBMISSIONS_PATH = str(BASE_DIR / "sampled.ndjson")
+DEFAULT_SUBMISSIONS_PATH = BASE_DIR / "sample_data" / "sampled.ndjson"
+DEFAULT_LABELS_PATH = BASE_DIR / "pipeline" / "labels_3000.ndjson"
+DEFAULT_THREAD_PATH = BASE_DIR / "pipeline" / "thread_metrics.ndjson"
 
 
 # =============================================================================

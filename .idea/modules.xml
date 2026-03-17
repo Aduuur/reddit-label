@@ -3,7 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/Calibration/.idea/Calibration.iml" filepath="$PROJECT_DIR$/Calibration/.idea/Calibration.iml" />
-      <module fileurl="file://$PROJECT_DIR$/Playfull Checks/.idea/Playfull Checks.iml" filepath="$PROJECT_DIR$/Playfull Checks/.idea/Playfull Checks.iml" />
+      <module fileurl="file://$PROJECT_DIR$/PlayfullChecks/.idea/Playfull Checks.iml" filepath="$PROJECT_DIR$/PlayfullChecks/.idea/Playfull Checks.iml" />
       <module fileurl="file://$PROJECT_DIR$/Sample_data/.idea/Sample_data.iml" filepath="$PROJECT_DIR$/Sample_data/.idea/Sample_data.iml" />
       <module fileurl="file://$PROJECT_DIR$/data/.idea/data.iml" filepath="$PROJECT_DIR$/data/.idea/data.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/reddit-label.iml" filepath="$PROJECT_DIR$/.idea/reddit-label.iml" />
