@@ -24,9 +24,17 @@ TIMEOUT_SECONDS = 60
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 1.5
 
-# Excel input / output
-EXCEL_PATH = "/mnt/data/sampled_threads.xlsx"
-OUTPUT_NDJSON = "labels_from_excel.ndjson"
+try:
+    BASE_DIR = Path(__file__).resolve().parent.parent
+except NameError:
+    BASE_DIR = Path.cwd()
+
+EXCEL_PATH = Path(r"C:\Users\rolfa\DataspellProjects\reddit\reddit-label\data\sampled_threads.xlsx")
+
+if not EXCEL_PATH.exists():
+    EXCEL_PATH = Path.cwd() / "sampled_threads.xlsx"
+
+OUTPUT_NDJSON = Path.cwd() / "labels_from_excel.ndjson"
 
 
 # =============================================================================
