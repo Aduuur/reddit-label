@@ -1,0 +1,362 @@
+{
+  "human_excel": "/Users/arthur/DataspellProjects/reddit-l/data/sampled_threads.xlsx",
+  "llm_ndjson": "/Users/arthur/DataspellProjects/reddit-l/labels_from_excel.ndjson",
+  "output_dir": "/Users/arthur/DataspellProjects/reddit-l/results_agreement_arthur",
+  "active_annotators": [
+    "Arthur"
+  ],
+  "tasks_run": [
+    "stance_intensity",
+    "epistemic_modality",
+    "justification_density",
+    "responsiveness",
+    "agreement",
+    "civility",
+    "sarcasm"
+  ],
+  "n_human_rows": 400,
+  "n_llm_rows_wide": 355,
+  "n_merged_rows": 400,
+  "available_columns": [
+    "comment_id",
+    "best_topic_index",
+    "body",
+    "predecessor",
+    "Arthur__stance_intensity",
+    "Arthur__epistemic_modality",
+    "Arthur__justification_density",
+    "Arthur__responsiveness",
+    "Arthur__agreement",
+    "Arthur__civility",
+    "Arthur__sarcasm",
+    "llm__agreement",
+    "llm__civility",
+    "llm__epistemic_modality",
+    "llm__justification_density",
+    "llm__responsiveness",
+    "llm__sarcasm",
+    "llm__stance_intensity",
+    "llm_conf__agreement",
+    "llm_conf__civility",
+    "llm_conf__epistemic_modality",
+    "llm_conf__justification_density",
+    "llm_conf__responsiveness",
+    "llm_conf__sarcasm",
+    "llm_conf__stance_intensity"
+  ],
+  "human_info": {
+    "column_mapping": {
+      "comment_id": "comment_id",
+      "best_topic_index": "best_topic_index",
+      "body": "body",
+      "predecessor": "predecessor",
+      "Arthur__stance_intensity": "Arthur__stance intensity [1,6]",
+      "Arthur__epistemic_modality": "Arthur__epistemic modality [0,1]",
+      "Arthur__justification_density": "Arthur__justificartion density",
+      "Arthur__responsiveness": "Arthur__responsivness [0,1]",
+      "Arthur__agreement": "Arthur__agreement -1,1]",
+      "Arthur__civility": "Arthur__civility [1,6]",
+      "Arthur__sarcasm": "Arthur__sarcasm[0,1]"
+    },
+    "missing_columns": [],
+    "n_rows_raw": 400,
+    "n_rows_standardized": 400
+  },
+  "llm_info": {
+    "n_rows_long_total": 2481,
+    "n_rows_long_kept_known_tasks": 2481,
+    "n_rows_wide": 355,
+    "parse_errors": [],
+    "n_parse_errors": 0,
+    "duplicate_comment_task_pairs_n": 0,
+    "duplicate_comment_task_pairs_preview": [],
+    "known_tasks_present": [
+      "agreement",
+      "civility",
+      "epistemic_modality",
+      "justification_density",
+      "responsiveness",
+      "sarcasm",
+      "stance_intensity"
+    ],
+    "raw_tasks_present": [
+      "agreement",
+      "civility",
+      "epistemic_modality",
+      "justification_density",
+      "responsiveness",
+      "sarcasm",
+      "stance_intensity"
+    ],
+    "unknown_tasks_after_normalization": []
+  },
+  "coverage_meta": {
+    "n_human_ids": 400,
+    "n_llm_ids": 355,
+    "n_matched_ids": 355,
+    "n_human_only_ids": 45,
+    "n_llm_only_ids": 0,
+    "matched_id_rate_vs_human": 0.8875,
+    "matched_id_rate_vs_llm": 1.0
+  },
+  "results": [
+    {
+      "pair_name": "Arthur__vs__llm",
+      "task": "stance_intensity",
+      "task_type": "ordinal",
+      "n_valid": 350,
+      "metrics": {
+        "n_valid": 350,
+        "accuracy": 0.10285714285714286,
+        "mae": 1.7914285714285714,
+        "rmse": 2.076397980019382,
+        "spearman_rho": 0.12281589935261068,
+        "spearman_p": 0.021552551872245317,
+        "pearson_r": 0.09279422321290251,
+        "pearson_p": 0.08299746484445997,
+        "cohens_kappa_unweighted": -0.01683937823834203,
+        "cohens_kappa_linear": 0.016862741584309227,
+        "cohens_kappa_quadratic": 0.05652793706256232,
+        "adjacent_accuracy": 0.4228571428571429,
+        "confusion_matrix": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            9,
+            0,
+            6,
+            0,
+            0,
+            3
+          ],
+          [
+            39,
+            1,
+            32,
+            0,
+            1,
+            16
+          ],
+          [
+            65,
+            2,
+            92,
+            2,
+            0,
+            50
+          ],
+          [
+            5,
+            0,
+            13,
+            0,
+            0,
+            4
+          ],
+          [
+            3,
+            0,
+            5,
+            0,
+            0,
+            2
+          ]
+        ],
+        "labels": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ]
+      }
+    },
+    {
+      "pair_name": "Arthur__vs__llm",
+      "task": "epistemic_modality",
+      "task_type": "continuous",
+      "n_valid": 335,
+      "metrics": {
+        "n_valid": 335,
+        "mae": 0.3019611940298507,
+        "rmse": 0.37716835387420705,
+        "spearman_rho": 0.20324521318143043,
+        "spearman_p": 0.00018020850947132483,
+        "pearson_r": 0.11057205803580732,
+        "pearson_p": 0.04313072163002276,
+        "cohens_kappa_unweighted": NaN,
+        "accuracy_exact": 0.14328358208955225
+      }
+    },
+    {
+      "pair_name": "Arthur__vs__llm",
+      "task": "justification_density",
+      "task_type": "continuous",
+      "n_valid": 148,
+      "metrics": {
+        "n_valid": 148,
+        "mae": 1.1618243243243243,
+        "rmse": 2.2695149201917517,
+        "spearman_rho": 0.18987134675310047,
+        "spearman_p": 0.02081262534045703,
+        "pearson_r": -0.026773215154559445,
+        "pearson_p": 0.7466903538383519,
+        "cohens_kappa_unweighted": NaN,
+        "accuracy_exact": 0.39864864864864863
+      }
+    },
+    {
+      "pair_name": "Arthur__vs__llm",
+      "task": "responsiveness",
+      "task_type": "continuous",
+      "n_valid": 354,
+      "metrics": {
+        "n_valid": 354,
+        "mae": 0.5084887005649719,
+        "rmse": 0.5549881990907045,
+        "spearman_rho": 0.3977484091659386,
+        "spearman_p": 7.225648529004341e-15,
+        "pearson_r": 0.31818063892211007,
+        "pearson_p": 9.052989558247545e-10,
+        "cohens_kappa_unweighted": NaN,
+        "accuracy_exact": 0.03954802259887006
+      }
+    },
+    {
+      "pair_name": "Arthur__vs__llm",
+      "task": "agreement",
+      "task_type": "continuous",
+      "n_valid": 347,
+      "metrics": {
+        "n_valid": 347,
+        "mae": 0.5521613832853026,
+        "rmse": 0.7146470884955041,
+        "spearman_rho": 0.06155452611708391,
+        "spearman_p": 0.2527974072166645,
+        "pearson_r": 0.060193140214395174,
+        "pearson_p": 0.2634635204900907,
+        "cohens_kappa_unweighted": NaN,
+        "accuracy_exact": 0.276657060518732
+      }
+    },
+    {
+      "pair_name": "Arthur__vs__llm",
+      "task": "civility",
+      "task_type": "ordinal",
+      "n_valid": 355,
+      "metrics": {
+        "n_valid": 355,
+        "accuracy": 0.23943661971830985,
+        "mae": 1.884507042253521,
+        "rmse": 2.5225741379967688,
+        "spearman_rho": 0.2602680405378936,
+        "spearman_p": 6.609969608748752e-07,
+        "pearson_r": 0.2628737254043573,
+        "pearson_p": 5.058391276743166e-07,
+        "cohens_kappa_unweighted": 0.020169080890997004,
+        "cohens_kappa_linear": 0.05783992859268072,
+        "cohens_kappa_quadratic": 0.0802718545032497,
+        "adjacent_accuracy": 0.5859154929577465,
+        "confusion_matrix": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            1,
+            2,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            1,
+            1,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            13,
+            1,
+            1,
+            1,
+            1
+          ],
+          [
+            2,
+            1,
+            1,
+            0,
+            0,
+            0
+          ],
+          [
+            20,
+            82,
+            23,
+            3,
+            119,
+            82
+          ]
+        ],
+        "labels": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ]
+      }
+    },
+    {
+      "pair_name": "Arthur__vs__llm",
+      "task": "sarcasm",
+      "task_type": "binary",
+      "n_valid": 340,
+      "metrics": {
+        "n_valid": 340,
+        "accuracy": 0.7617647058823529,
+        "mae": 0.23823529411764705,
+        "rmse": 0.48809353009197637,
+        "spearman_rho": 0.05243048691065032,
+        "spearman_p": 0.3351095094248081,
+        "pearson_r": 0.052430486910650415,
+        "pearson_p": 0.33510950942480655,
+        "cohens_kappa_unweighted": 0.027405000706314464,
+        "cohens_kappa_linear": 0.027405000706314464,
+        "cohens_kappa_quadratic": 0.027405000706314464,
+        "adjacent_accuracy": NaN,
+        "confusion_matrix": [
+          [
+            256,
+            76
+          ],
+          [
+            5,
+            3
+          ]
+        ],
+        "labels": [
+          0,
+          1
+        ]
+      }
+    }
+  ]
+}

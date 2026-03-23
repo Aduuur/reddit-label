@@ -1,0 +1,8 @@
+pair_name,task,n_valid
+Arthur__vs__llm,stance_intensity,350
+Arthur__vs__llm,epistemic_modality,335
+Arthur__vs__llm,justification_density,148
+Arthur__vs__llm,responsiveness,354
+Arthur__vs__llm,agreement,347
+Arthur__vs__llm,civility,355
+Arthur__vs__llm,sarcasm,340

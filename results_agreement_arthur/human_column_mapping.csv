@@ -1,0 +1,12 @@
+standard_column,source_column_in_excel
+comment_id,comment_id
+best_topic_index,best_topic_index
+body,body
+predecessor,predecessor
+Arthur__stance_intensity,"Arthur__stance intensity [1,6]"
+Arthur__epistemic_modality,"Arthur__epistemic modality [0,1]"
+Arthur__justification_density,Arthur__justificartion density
+Arthur__responsiveness,"Arthur__responsivness [0,1]"
+Arthur__agreement,"Arthur__agreement -1,1]"
+Arthur__civility,"Arthur__civility [1,6]"
+Arthur__sarcasm,"Arthur__sarcasm[0,1]"

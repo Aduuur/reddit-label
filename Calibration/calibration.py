@@ -2,7 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-agreement_analysis_reddit.py
+calibration.py
+
+starten über
+
+python calibration.py \
+  --human_excel "/Users/arthur/DataspellProjects/reddit-l/data/sampled_threads.xlsx" \
+  --llm_ndjson "/Users/arthur/DataspellProjects/reddit-l/labels_from_excel.ndjson" \
+  --output_dir "/Users/arthur/DataspellProjects/reddit-l/results_agreement_arthur" \
+  --active_annotators Arthur
 
 Zweck
 -----
@@ -15,12 +23,20 @@ Input:
    - best_topic_index
    - body
    - predecessor
-   - Arthur:    stance..., epistemic..., justification..., responsiveness..., agreement..., civility..., sarcasm...
-   - Veronika:  stance..., epistemic..., justification..., responsiveness..., agreement..., civility..., sarcasm...
+   - Arthur / Veronika als Annotator-Gruppen
+   - darunter Task-Spalten wie:
+       stance intensity [1,6]
+       epistemic modality [0,1]
+       justificartion density
+       responsivness [0,1] / responsivness [-1,1]
+       agreement [-1,1] / agreement 0,1]
+       civility [1,6]
+       sarcasm[0,1]
 
 2) LLM-Annotationen in NDJSON
    - eine Zeile pro (comment_id, task)
    - result.score oder result.label
+   - result.confidence optional
    - task z.B. stance_intensity, civility, epistemic_modality, ...
 
 Features
@@ -29,8 +45,10 @@ Features
 - Human-Human nur wenn 2 Humans aktiv sind
 - Human-LLM für alle aktiven Humans
 - automatische Umwandlung des NDJSON long -> wide
-- ordinale und kontinuierliche Tasks werden unterschiedlich ausgewertet
+- ordinale, binäre und kontinuierliche Tasks werden unterschiedlich ausgewertet
 - robuste Spaltennormalisierung für leicht unterschiedliche Excel-Benennungen
+- Coverage- und Duplikat-Checks
+- Warnungen bei fehlenden Spalten
 
 Beispiel:
 python agreement_analysis_reddit.py \
@@ -44,10 +62,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -65,15 +82,18 @@ from sklearn.metrics import (
 # KONFIGURATION
 # =============================================================================
 
-# Kanonische Tasknamen intern
-TASK_CONFIG = {
+TASK_CONFIG: Dict[str, Dict[str, Any]] = {
     "stance_intensity": {
         "type": "ordinal",
         "human_patterns": [
             "stance intensity [1,6]",
             "stance intensity",
         ],
-        "llm_task_names": ["stance_intensity"],
+        "llm_task_names": [
+            "stance_intensity",
+            "stance intensity",
+            "stance-intensity",
+        ],
         "label_min": 1,
         "label_max": 6,
         "adjacent_tolerance": 1,
@@ -84,42 +104,60 @@ TASK_CONFIG = {
             "epistemic modality [0,1]",
             "epistemic modality",
         ],
-        "llm_task_names": ["epistemic_modality"],
+        "llm_task_names": [
+            "epistemic_modality",
+            "epistemic modality",
+            "epistemic-modality",
+        ],
         "label_min": 0.0,
         "label_max": 1.0,
     },
     "justification_density": {
         "type": "continuous",
         "human_patterns": [
-            "justificartion density [0,1]",   # absichtlicher Excel-Typo mit abgedeckt
+            "justificartion density [0,1]",
             "justification density [0,1]",
             "justificartion density",
             "justification density",
         ],
-        "llm_task_names": ["justification_density"],
+        "llm_task_names": [
+            "justification_density",
+            "justification density",
+            "justification-density",
+        ],
         "label_min": 0.0,
         "label_max": 1.0,
     },
     "responsiveness": {
         "type": "continuous",
         "human_patterns": [
-            "responsivness [0,1]",           # absichtlicher Excel-Typo mit abgedeckt
+            "responsivness [0,1]",
             "responsiveness [0,1]",
+            "responsivness [-1,1]",
+            "responsiveness [-1,1]",
             "responsivness",
             "responsiveness",
         ],
-        "llm_task_names": ["responsiveness"],
-        "label_min": 0.0,
+        "llm_task_names": [
+            "responsiveness",
+            "responsivness",
+            "responseiveness",
+        ],
+        "label_min": -1.0,
         "label_max": 1.0,
     },
     "agreement": {
         "type": "continuous",
         "human_patterns": [
+            "agreement [-1,1]",
             "agreement [0,1]",
+            "agreement 0,1]",
             "agreement",
         ],
-        "llm_task_names": ["agreement"],
-        "label_min": 0.0,
+        "llm_task_names": [
+            "agreement",
+        ],
+        "label_min": -1.0,
         "label_max": 1.0,
     },
     "civility": {
@@ -128,7 +166,9 @@ TASK_CONFIG = {
             "civility [1,6]",
             "civility",
         ],
-        "llm_task_names": ["civility"],
+        "llm_task_names": [
+            "civility",
+        ],
         "label_min": 1,
         "label_max": 6,
         "adjacent_tolerance": 1,
@@ -140,9 +180,11 @@ TASK_CONFIG = {
             "sarcasm [0,1]",
             "sarcasm",
         ],
-        "llm_task_names": ["sarcasm"],
-        "label_min": 0.0,
-        "label_max": 1.0,
+        "llm_task_names": [
+            "sarcasm",
+        ],
+        "label_min": 0,
+        "label_max": 1,
     },
 }
 
@@ -162,8 +204,23 @@ def normalize_text(s: str) -> str:
     s = "" if s is None else str(s)
     s = s.strip().lower()
     s = s.replace("\n", " ")
+    s = s.replace("\t", " ")
+    s = s.replace("\xa0", " ")
     s = re.sub(r"\s+", " ", s)
     return s
+
+
+def simplify_for_matching(s: str) -> str:
+    """
+    Etwas aggressivere Normalisierung für robustes Header-Matching.
+    Entfernt Sonderzeichen weitgehend, damit z.B.
+    'agreement 0,1]' und 'agreement [0,1]' ähnlich matchen.
+    """
+    s = normalize_text(s)
+    s = s.replace(",", ".")
+    s = re.sub(r"[\[\]\(\)\{\}_\-:/\\]", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
 
 
 def safe_numeric(series: pd.Series) -> pd.Series:
@@ -171,50 +228,135 @@ def safe_numeric(series: pd.Series) -> pd.Series:
         if pd.isna(x):
             return np.nan
         if isinstance(x, str):
-            if x.strip().upper() == "ABSTAIN":
-                return np.nan
             x = x.strip()
+            if x == "":
+                return np.nan
+            if x.upper() == "ABSTAIN":
+                return np.nan
+            x = x.replace(",", ".")
         return pd.to_numeric(x, errors="coerce")
+
     return series.map(_convert)
+
+
+def read_excel_raw(path: Path) -> pd.DataFrame:
+    return pd.read_excel(path, header=None)
+
+
+def is_effectively_empty(x: object) -> bool:
+    if pd.isna(x):
+        return True
+    s = str(x).strip()
+    return s == "" or s.lower().startswith("unnamed")
+
+
+def flatten_two_header_excel(path: Path) -> pd.DataFrame:
+    """
+    Erwartet eine Datei wie deine:
+    Zeile 0: Gruppenköpfe (Arthur / Veronika, Meta leer)
+    Zeile 1: eigentliche Spaltennamen
+    Ab Zeile 2: Daten
+
+    Wichtig:
+    Die Gruppenköpfe in Zeile 0 werden nach rechts forward-filled,
+    damit Arthur/Veronika für alle zugehörigen Taskspalten gelten.
+    """
+    raw = read_excel_raw(path)
+    if raw.shape[0] < 3:
+        raise ValueError("Excel-Datei hat zu wenige Zeilen für zweistufige Header-Erkennung.")
+
+    row0 = pd.Series(raw.iloc[0].tolist(), dtype="object")
+    row1 = raw.iloc[1].tolist()
+
+    # Nur echte Annotator-Namen behalten, Rest leer setzen
+    row0 = row0.map(
+        lambda x: str(x).strip()
+        if (not is_effectively_empty(x) and normalize_text(x) in {normalize_text(a) for a in SUPPORTED_ANNOTATORS})
+        else np.nan
+    )
+
+    # Nach rechts auffüllen: Arthur gilt dann für alle folgenden Arthur-Spalten,
+    # bis Veronika kommt
+    row0 = row0.ffill().tolist()
+
+    flattened_cols: List[str] = []
+    for idx, (top, sub) in enumerate(zip(row0, row1)):
+        top_s = "" if is_effectively_empty(top) else str(top).strip()
+        sub_s = "" if is_effectively_empty(sub) else str(sub).strip()
+
+        # Meta-Spalten links sollen NICHT fälschlich Arthur bekommen
+        if idx < len(BASE_META_COLS):
+            flattened_cols.append(sub_s if sub_s else top_s)
+            continue
+
+        if top_s and sub_s and normalize_text(top_s) in {normalize_text(a) for a in SUPPORTED_ANNOTATORS}:
+            flattened_cols.append(f"{top_s}__{sub_s}")
+        elif sub_s:
+            flattened_cols.append(sub_s)
+        elif top_s:
+            flattened_cols.append(top_s)
+        else:
+            flattened_cols.append("")
+
+    data = raw.iloc[2:].copy()
+    data.columns = flattened_cols
+    data = data.reset_index(drop=True)
+
+    keep_cols = [c for c in data.columns if str(c).strip() != ""]
+    data = data[keep_cols].copy()
+
+    return data
 
 
 def load_excel_with_flattened_headers(path: Path) -> pd.DataFrame:
     """
-    Liest Excel robust ein.
-    Falls 2 Kopfzeilen vorhanden sind, werden sie zusammengeführt.
-    Falls nur 1 Kopfzeile vorhanden ist, wird diese normal verwendet.
+    Robustes Einlesen:
+    1) Erst explizit zweizeilige Header-Struktur wie in deiner Datei
+    2) Dann Versuch mit MultiHeader
+    3) Fallback auf einfache Kopfzeile
     """
-    # Versuch 1: Multi-Header lesen
+    # 1) Expliziter Zweizeilen-Header
+    try:
+        df_two = flatten_two_header_excel(path)
+        cols_norm = [normalize_text(c) for c in df_two.columns]
+        if any(c == "comment_id" for c in cols_norm):
+            return df_two
+    except Exception:
+        pass
+
+    # 2) MultiHeader-Versuch
     try:
         df_multi = pd.read_excel(path, header=[0, 1])
-        # Wenn wirklich MultiIndex-artig
         if isinstance(df_multi.columns, pd.MultiIndex):
             flattened = []
             for top, sub in df_multi.columns:
                 top_s = "" if pd.isna(top) else str(top).strip()
                 sub_s = "" if pd.isna(sub) else str(sub).strip()
 
-                if sub_s and sub_s.lower() != "unnamed":
-                    if top_s and not sub_s.startswith("Unnamed"):
-                        if normalize_text(top_s) in {"arthur", "veronika"}:
-                            flattened.append(f"{top_s}__{sub_s}")
-                        else:
-                            # z.B. Basisfelder comment_id etc.
-                            flattened.append(sub_s if sub_s else top_s)
+                top_empty = is_effectively_empty(top_s)
+                sub_empty = is_effectively_empty(sub_s)
+
+                if not top_empty and not sub_empty:
+                    if normalize_text(top_s) in {normalize_text(a) for a in SUPPORTED_ANNOTATORS}:
+                        flattened.append(f"{top_s}__{sub_s}")
                     else:
                         flattened.append(sub_s)
-                else:
+                elif not sub_empty:
+                    flattened.append(sub_s)
+                elif not top_empty:
                     flattened.append(top_s)
+                else:
+                    flattened.append("")
 
             df_multi.columns = flattened
-            # Heuristik: sinnvoll nur, wenn comment_id o.ä. auftaucht
+            df_multi = df_multi[[c for c in df_multi.columns if str(c).strip() != ""]].copy()
             cols_norm = [normalize_text(c) for c in df_multi.columns]
-            if any("comment_id" in c for c in cols_norm):
+            if any(c == "comment_id" for c in cols_norm):
                 return df_multi
     except Exception:
         pass
 
-    # Fallback: einfache Kopfzeile
+    # 3) Fallback
     df = pd.read_excel(path)
     df.columns = [str(c).strip() for c in df.columns]
     return df
@@ -222,36 +364,67 @@ def load_excel_with_flattened_headers(path: Path) -> pd.DataFrame:
 
 def find_base_column(df: pd.DataFrame, target_name: str) -> Optional[str]:
     target_norm = normalize_text(target_name)
+
+    # exakter Match
     for col in df.columns:
         if normalize_text(col) == target_norm:
             return col
+
+    # vereinfachter Match
+    target_simple = simplify_for_matching(target_name)
+    for col in df.columns:
+        if simplify_for_matching(col) == target_simple:
+            return col
+
+    # enthält target
     for col in df.columns:
         if target_norm in normalize_text(col):
             return col
+
     return None
 
 
 def find_annotator_task_column(df: pd.DataFrame, annotator: str, task_key: str) -> Optional[str]:
-    patterns = [normalize_text(p) for p in TASK_CONFIG[task_key]["human_patterns"]]
     annotator_norm = normalize_text(annotator)
+    patterns_norm = [normalize_text(p) for p in TASK_CONFIG[task_key]["human_patterns"]]
+    patterns_simple = [simplify_for_matching(p) for p in TASK_CONFIG[task_key]["human_patterns"]]
 
-    # 1) Bevorzugt Spalten mit Prefix "Arthur__..." oder "Veronika__..."
+    candidates = []
+
     for col in df.columns:
         col_norm = normalize_text(col)
-        if annotator_norm in col_norm:
-            if any(p in col_norm for p in patterns):
-                return col
+        col_simple = simplify_for_matching(col)
 
-    # 2) Falls die Excel bereits manuell umbenannt wurde, z.B. "Arthur stance intensity [1,6]"
-    for col in df.columns:
-        col_norm = normalize_text(col)
-        if annotator_norm in col_norm and any(p in col_norm for p in patterns):
-            return col
+        if annotator_norm not in col_norm:
+            continue
 
-    return None
+        score = 0
+        for p in patterns_norm:
+            if p in col_norm:
+                score = max(score, 3)
+        for p in patterns_simple:
+            if p in col_simple:
+                score = max(score, 2)
+
+        # Schwächerer Fallback: Task-Key ohne Unterstrich
+        fallback = task_key.replace("_", " ")
+        if fallback in col_simple:
+            score = max(score, 1)
+
+        if score > 0:
+            candidates.append((score, col))
+
+    if not candidates:
+        return None
+
+    candidates = sorted(candidates, key=lambda x: (-x[0], x[1]))
+    return candidates[0][1]
 
 
-def build_human_dataframe(df_raw: pd.DataFrame, active_annotators: List[str]) -> pd.DataFrame:
+def build_human_dataframe(
+        df_raw: pd.DataFrame,
+        active_annotators: List[str],
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Baut ein standardisiertes Human-DataFrame:
     - comment_id
@@ -262,16 +435,20 @@ def build_human_dataframe(df_raw: pd.DataFrame, active_annotators: List[str]) ->
     - Veronika__stance_intensity, ...
     """
     out = pd.DataFrame()
+    column_mapping: Dict[str, str] = {}
+    missing_columns: List[str] = []
 
     # Basisfelder
     for base_col in BASE_META_COLS:
         found = find_base_column(df_raw, base_col)
         if found is not None:
             out[base_col] = df_raw[found]
+            column_mapping[base_col] = found
         else:
             if base_col == "comment_id":
                 raise ValueError(f"Pflichtspalte '{base_col}' wurde in der Excel nicht gefunden.")
             out[base_col] = np.nan
+            missing_columns.append(base_col)
 
     # Annotator-Spalten
     for annotator in active_annotators:
@@ -281,11 +458,22 @@ def build_human_dataframe(df_raw: pd.DataFrame, active_annotators: List[str]) ->
 
             if found is None:
                 out[std_name] = np.nan
+                missing_columns.append(std_name)
             else:
                 out[std_name] = safe_numeric(df_raw[found])
+                column_mapping[std_name] = found
 
     out["comment_id"] = out["comment_id"].astype(str).str.strip()
-    return out
+    out = out[out["comment_id"].notna()].copy()
+    out = out[out["comment_id"] != ""].copy()
+
+    info = {
+        "column_mapping": column_mapping,
+        "missing_columns": missing_columns,
+        "n_rows_raw": int(len(df_raw)),
+        "n_rows_standardized": int(len(out)),
+    }
+    return out, info
 
 
 def extract_llm_value(result_obj: dict) -> Optional[float]:
@@ -303,8 +491,11 @@ def extract_llm_value(result_obj: dict) -> Optional[float]:
     else:
         return np.nan
 
-    if isinstance(val, str) and val.strip().upper() == "ABSTAIN":
-        return np.nan
+    if isinstance(val, str):
+        val = val.strip()
+        if val.upper() == "ABSTAIN":
+            return np.nan
+        val = val.replace(",", ".")
 
     try:
         return float(val)
@@ -312,7 +503,7 @@ def extract_llm_value(result_obj: dict) -> Optional[float]:
         return np.nan
 
 
-def load_llm_ndjson(path: Path) -> pd.DataFrame:
+def load_llm_ndjson(path: Path) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Liest NDJSON long-format und pivotiert zu:
     - comment_id
@@ -322,27 +513,32 @@ def load_llm_ndjson(path: Path) -> pd.DataFrame:
     plus optionale confidence-Spalten
     """
     rows = []
+    parse_errors = []
 
     with open(path, "r", encoding="utf-8") as f:
         for line_no, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
+
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError as e:
-                print(f"[WARN] NDJSON-Zeile {line_no} konnte nicht geparst werden: {e}")
+                parse_errors.append({"line_no": line_no, "error": str(e)})
                 continue
 
             comment_id = str(obj.get("comment_id", "")).strip()
             task = obj.get("task")
             result = obj.get("result", {})
+
             value = extract_llm_value(result)
 
             confidence = np.nan
             if isinstance(result, dict):
                 conf = result.get("confidence")
                 try:
+                    if isinstance(conf, str):
+                        conf = conf.replace(",", ".").strip()
                     confidence = float(conf)
                 except Exception:
                     confidence = np.nan
@@ -361,22 +557,36 @@ def load_llm_ndjson(path: Path) -> pd.DataFrame:
         raise ValueError("Keine gültigen LLM-Annotationen im NDJSON gefunden.")
 
     df_long = pd.DataFrame(rows)
+    n_rows_before_filter = len(df_long)
 
-    # Nur Tasks behalten, die wir kennen
+    # Mapping LLM task -> Standardtask
     llm_task_to_std = {}
     for task_key, cfg in TASK_CONFIG.items():
+        llm_task_to_std[normalize_task_name(task_key)] = task_key
         for llm_name in cfg["llm_task_names"]:
-            llm_task_to_std[llm_name] = task_key
+            llm_task_to_std[normalize_task_name(llm_name)] = task_key
 
-    df_long = df_long[df_long["task"].isin(llm_task_to_std.keys())].copy()
-    df_long["task_std"] = df_long["task"].map(llm_task_to_std)
+    df_long["task_norm"] = df_long["task"].map(normalize_task_name)
+
+    unknown_tasks = sorted(df_long.loc[~df_long["task_norm"].isin(llm_task_to_std.keys()), "task"].dropna().unique().tolist())
+
+    df_long = df_long[df_long["task_norm"].isin(llm_task_to_std.keys())].copy()
+    df_long["task_std"] = df_long["task_norm"].map(llm_task_to_std)
+
+    # Duplikate prüfen
+    dup_counts = (
+        df_long.groupby(["comment_id", "task_std"], dropna=False)
+        .size()
+        .reset_index(name="n")
+    )
+    dup_rows = dup_counts[dup_counts["n"] > 1].copy()
 
     # Werte pivotieren
     df_val = df_long.pivot_table(
         index="comment_id",
         columns="task_std",
         values="value",
-        aggfunc="first"
+        aggfunc="first",
     ).reset_index()
 
     # Confidence pivotieren
@@ -384,7 +594,7 @@ def load_llm_ndjson(path: Path) -> pd.DataFrame:
         index="comment_id",
         columns="task_std",
         values="confidence",
-        aggfunc="first"
+        aggfunc="first",
     ).reset_index()
 
     # Spalten umbenennen
@@ -395,7 +605,20 @@ def load_llm_ndjson(path: Path) -> pd.DataFrame:
 
     df = df_val.merge(df_conf, on="comment_id", how="outer")
     df["comment_id"] = df["comment_id"].astype(str).str.strip()
-    return df
+
+    info = {
+        "n_rows_long_total": int(n_rows_before_filter),
+        "n_rows_long_kept_known_tasks": int(len(df_long)),
+        "n_rows_wide": int(len(df)),
+        "parse_errors": parse_errors,
+        "n_parse_errors": int(len(parse_errors)),
+        "duplicate_comment_task_pairs_n": int(len(dup_rows)),
+        "duplicate_comment_task_pairs_preview": dup_rows.head(50).to_dict(orient="records"),
+        "known_tasks_present": sorted(df_long["task_std"].dropna().unique().tolist()),
+        "raw_tasks_present": sorted(pd.Series(rows).map(lambda x: x["task"]).dropna().unique().tolist()),
+        "unknown_tasks_after_normalization": unknown_tasks,
+    }
+    return df, info
 
 
 def adjacent_accuracy(y_true: np.ndarray, y_pred: np.ndarray, tolerance: int = 1) -> float:
@@ -404,8 +627,17 @@ def adjacent_accuracy(y_true: np.ndarray, y_pred: np.ndarray, tolerance: int = 1
 
 def is_binary_like(arr: np.ndarray) -> bool:
     vals = pd.Series(arr).dropna().unique().tolist()
-    vals = sorted(vals)
     return set(vals).issubset({0, 1})
+
+
+def safe_corr(func, y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[float, float]:
+    try:
+        stat, p = func(y_true, y_pred)
+        stat = np.nan if pd.isna(stat) else float(stat)
+        p = np.nan if pd.isna(p) else float(p)
+        return stat, p
+    except Exception:
+        return np.nan, np.nan
 
 
 def compute_discrete_metrics(
@@ -414,10 +646,10 @@ def compute_discrete_metrics(
         label_min: int,
         label_max: int,
         adjacent_tolerance: Optional[int] = None,
-) -> Dict:
+) -> Dict[str, Any]:
     labels = list(range(label_min, label_max + 1))
 
-    out = {
+    out: Dict[str, Any] = {
         "n_valid": int(len(y_true)),
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "mae": float(mean_absolute_error(y_true, y_pred)),
@@ -435,19 +667,13 @@ def compute_discrete_metrics(
     }
 
     if len(y_true) >= 2:
-        try:
-            rho, p = spearmanr(y_true, y_pred)
-            out["spearman_rho"] = float(rho)
-            out["spearman_p"] = float(p)
-        except Exception:
-            pass
+        rho, p = safe_corr(spearmanr, y_true, y_pred)
+        out["spearman_rho"] = rho
+        out["spearman_p"] = p
 
-        try:
-            r, p = pearsonr(y_true, y_pred)
-            out["pearson_r"] = float(r)
-            out["pearson_p"] = float(p)
-        except Exception:
-            pass
+        r, p = safe_corr(pearsonr, y_true, y_pred)
+        out["pearson_r"] = r
+        out["pearson_p"] = p
 
         try:
             out["cohens_kappa_unweighted"] = float(cohen_kappa_score(y_true, y_pred))
@@ -470,8 +696,8 @@ def compute_discrete_metrics(
     return out
 
 
-def compute_continuous_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict:
-    out = {
+def compute_continuous_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
         "n_valid": int(len(y_true)),
         "mae": float(mean_absolute_error(y_true, y_pred)),
         "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
@@ -484,24 +710,19 @@ def compute_continuous_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict:
     }
 
     if len(y_true) >= 2:
-        try:
-            rho, p = spearmanr(y_true, y_pred)
-            out["spearman_rho"] = float(rho)
-            out["spearman_p"] = float(p)
-        except Exception:
-            pass
+        rho, p = safe_corr(spearmanr, y_true, y_pred)
+        out["spearman_rho"] = rho
+        out["spearman_p"] = p
 
-        try:
-            r, p = pearsonr(y_true, y_pred)
-            out["pearson_r"] = float(r)
-            out["pearson_p"] = float(p)
-        except Exception:
-            pass
+        r, p = safe_corr(pearsonr, y_true, y_pred)
+        out["pearson_r"] = r
+        out["pearson_p"] = p
 
-        # Kappa nur wenn binär/diskret
         if is_binary_like(y_true) and is_binary_like(y_pred):
             try:
-                out["cohens_kappa_unweighted"] = float(cohen_kappa_score(y_true.astype(int), y_pred.astype(int)))
+                out["cohens_kappa_unweighted"] = float(
+                    cohen_kappa_score(y_true.astype(int), y_pred.astype(int))
+                )
             except Exception:
                 pass
 
@@ -514,7 +735,7 @@ def compare_two_columns(
         col_b: str,
         task_key: str,
         pair_name: str,
-) -> Dict:
+) -> Dict[str, Any]:
     cfg = TASK_CONFIG[task_key]
 
     tmp = df[[col_a, col_b]].copy()
@@ -537,7 +758,6 @@ def compare_two_columns(
     if cfg["type"] == "ordinal":
         y_true = y_true.astype(int)
         y_pred = y_pred.astype(int)
-
         metrics = compute_discrete_metrics(
             y_true=y_true,
             y_pred=y_pred,
@@ -545,8 +765,19 @@ def compare_two_columns(
             label_max=int(cfg["label_max"]),
             adjacent_tolerance=cfg.get("adjacent_tolerance"),
         )
+
+    elif cfg["type"] == "binary":
+        y_true = y_true.astype(int)
+        y_pred = y_pred.astype(int)
+        metrics = compute_discrete_metrics(
+            y_true=y_true,
+            y_pred=y_pred,
+            label_min=int(cfg["label_min"]),
+            label_max=int(cfg["label_max"]),
+            adjacent_tolerance=None,
+        )
+
     elif cfg["type"] == "binary_or_continuous":
-        # Falls tatsächlich binär -> diskrete Metriken, sonst kontinuierlich
         if is_binary_like(y_true) and is_binary_like(y_pred):
             y_true = y_true.astype(int)
             y_pred = y_pred.astype(int)
@@ -559,6 +790,7 @@ def compare_two_columns(
             )
         else:
             metrics = compute_continuous_metrics(y_true=y_true, y_pred=y_pred)
+
     else:
         metrics = compute_continuous_metrics(y_true=y_true, y_pred=y_pred)
 
@@ -571,7 +803,7 @@ def compare_two_columns(
     }
 
 
-def flatten_results(results: List[Dict]) -> pd.DataFrame:
+def flatten_results(results: List[Dict[str, Any]]) -> pd.DataFrame:
     rows = []
     for r in results:
         m = r.get("metrics", {})
@@ -589,7 +821,7 @@ def flatten_results(results: List[Dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def save_confusion_matrices(results: List[Dict], output_dir: Path) -> None:
+def save_confusion_matrices(results: List[Dict[str, Any]], output_dir: Path) -> None:
     for r in results:
         m = r.get("metrics", {})
         cm = m.get("confusion_matrix")
@@ -603,8 +835,109 @@ def save_confusion_matrices(results: List[Dict], output_dir: Path) -> None:
 
 
 def write_json(data: dict, path: Path) -> None:
+    def _default(obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, (np.ndarray,)):
+            return obj.tolist()
+        return str(obj)
+
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2, default=_default)
+
+
+def build_coverage_report(
+        df_human: pd.DataFrame,
+        df_llm: pd.DataFrame,
+        df_merged: pd.DataFrame,
+        active_annotators: List[str],
+        tasks_to_run: List[str],
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    human_ids = set(df_human["comment_id"].astype(str).tolist())
+    llm_ids = set(df_llm["comment_id"].astype(str).tolist())
+    matched_ids = human_ids & llm_ids
+
+    pair_rows = []
+
+    # Human-Human
+    if len(active_annotators) == 2:
+        ann_a, ann_b = active_annotators[0], active_annotators[1]
+        for task_key in tasks_to_run:
+            col_a = f"{ann_a}__{task_key}"
+            col_b = f"{ann_b}__{task_key}"
+            if col_a in df_merged.columns and col_b in df_merged.columns:
+                n_valid = int(
+                    df_merged[[col_a, col_b]]
+                    .pipe(lambda x: x.assign(**{col_a: safe_numeric(x[col_a]), col_b: safe_numeric(x[col_b])}))
+                    .dropna()
+                    .shape[0]
+                )
+                pair_rows.append({
+                    "pair_name": f"{ann_a}__vs__{ann_b}",
+                    "task": task_key,
+                    "n_valid": n_valid,
+                })
+
+    # Human-LLM
+    for annotator in active_annotators:
+        for task_key in tasks_to_run:
+            col_h = f"{annotator}__{task_key}"
+            col_l = f"llm__{task_key}"
+            if col_h in df_merged.columns and col_l in df_merged.columns:
+                n_valid = int(
+                    df_merged[[col_h, col_l]]
+                    .pipe(lambda x: x.assign(**{col_h: safe_numeric(x[col_h]), col_l: safe_numeric(x[col_l])}))
+                    .dropna()
+                    .shape[0]
+                )
+                pair_rows.append({
+                    "pair_name": f"{annotator}__vs__llm",
+                    "task": task_key,
+                    "n_valid": n_valid,
+                })
+
+    coverage_meta = {
+        "n_human_ids": int(len(human_ids)),
+        "n_llm_ids": int(len(llm_ids)),
+        "n_matched_ids": int(len(matched_ids)),
+        "n_human_only_ids": int(len(human_ids - llm_ids)),
+        "n_llm_only_ids": int(len(llm_ids - human_ids)),
+        "matched_id_rate_vs_human": float(len(matched_ids) / len(human_ids)) if human_ids else np.nan,
+        "matched_id_rate_vs_llm": float(len(matched_ids) / len(llm_ids)) if llm_ids else np.nan,
+    }
+
+    return pd.DataFrame(pair_rows), coverage_meta
+
+def normalize_task_name(s: str) -> str:
+    s = "" if s is None else str(s)
+    s = s.strip().lower()
+    s = s.replace("\n", " ")
+    s = s.replace("\t", " ")
+    s = s.replace("-", "_")
+    s = s.replace(" ", "_")
+    s = re.sub(r"_+", "_", s)
+    s = re.sub(r"[^a-z0-9_]", "", s)
+    s = s.strip("_")
+    return s
+
+def print_missing_column_warnings(human_info: Dict[str, Any]) -> None:
+    missing = human_info.get("missing_columns", [])
+    if missing:
+        print("[WARN] Einige erwartete Spalten wurden nicht gefunden und als NaN angelegt:")
+        for col in missing:
+            print(f"  - {col}")
+
+
+def print_ndjson_warnings(llm_info: Dict[str, Any]) -> None:
+    n_parse_errors = llm_info.get("n_parse_errors", 0)
+    if n_parse_errors > 0:
+        print(f"[WARN] {n_parse_errors} NDJSON-Zeilen konnten nicht geparst werden.")
+
+    n_dups = llm_info.get("duplicate_comment_task_pairs_n", 0)
+    if n_dups > 0:
+        print(f"[WARN] {n_dups} doppelte (comment_id, task)-Paare im NDJSON gefunden. Pivot verwendet jeweils den ersten Wert.")
 
 
 # =============================================================================
@@ -621,14 +954,14 @@ def main() -> None:
         nargs="+",
         required=True,
         choices=SUPPORTED_ANNOTATORS,
-        help="Welche Human-Annotator:innen aktiv ausgewertet werden sollen, z.B. Arthur Veronika"
+        help="Welche Human-Annotator:innen aktiv ausgewertet werden sollen, z.B. Arthur Veronika",
     )
     parser.add_argument(
         "--tasks",
         nargs="*",
         default=list(TASK_CONFIG.keys()),
         choices=list(TASK_CONFIG.keys()),
-        help="Optional: nur bestimmte Tasks auswerten"
+        help="Optional: nur bestimmte Tasks auswerten",
     )
     args = parser.parse_args()
 
@@ -642,10 +975,12 @@ def main() -> None:
 
     print("[INFO] Lade Human-Excel ...")
     df_human_raw = load_excel_with_flattened_headers(human_excel)
-    df_human = build_human_dataframe(df_human_raw, active_annotators=active_annotators)
+    df_human, human_info = build_human_dataframe(df_human_raw, active_annotators=active_annotators)
+    print_missing_column_warnings(human_info)
 
     print("[INFO] Lade LLM-NDJSON ...")
-    df_llm = load_llm_ndjson(llm_ndjson)
+    df_llm, llm_info = load_llm_ndjson(llm_ndjson)
+    print_ndjson_warnings(llm_info)
 
     print("[INFO] Merge Human + LLM über comment_id ...")
     df = df_human.merge(df_llm, on="comment_id", how="left", suffixes=("", "_llmdup"))
@@ -653,7 +988,7 @@ def main() -> None:
     # Speichern der gemergten Tabelle
     df.to_csv(output_dir / "merged_annotations.csv", index=False)
 
-    results = []
+    results: List[Dict[str, Any]] = []
 
     # -------------------------------------------------------------------------
     # Human-Human nur wenn beide aktiv
@@ -703,6 +1038,29 @@ def main() -> None:
     df_summary.to_csv(output_dir / "agreement_summary.csv", index=False)
     save_confusion_matrices(results, output_dir=output_dir)
 
+    # Coverage
+    df_coverage_pairs, coverage_meta = build_coverage_report(
+        df_human=df_human,
+        df_llm=df_llm,
+        df_merged=df,
+        active_annotators=active_annotators,
+        tasks_to_run=tasks_to_run,
+    )
+    df_coverage_pairs.to_csv(output_dir / "coverage_by_pair_and_task.csv", index=False)
+
+    # Column mapping
+    df_column_mapping = pd.DataFrame(
+        [
+            {"standard_column": k, "source_column_in_excel": v}
+            for k, v in human_info.get("column_mapping", {}).items()
+        ]
+    )
+    df_column_mapping.to_csv(output_dir / "human_column_mapping.csv", index=False)
+
+    # NDJSON duplicate preview
+    dup_preview = llm_info.get("duplicate_comment_task_pairs_preview", [])
+    pd.DataFrame(dup_preview).to_csv(output_dir / "llm_duplicate_comment_task_pairs_preview.csv", index=False)
+
     meta = {
         "human_excel": str(human_excel),
         "llm_ndjson": str(llm_ndjson),
@@ -713,12 +1071,20 @@ def main() -> None:
         "n_llm_rows_wide": int(len(df_llm)),
         "n_merged_rows": int(len(df)),
         "available_columns": list(df.columns),
+        "human_info": human_info,
+        "llm_info": llm_info,
+        "coverage_meta": coverage_meta,
         "results": results,
     }
     write_json(meta, output_dir / "agreement_results.json")
 
     print("\n[OK] Fertig.")
     print(f"[OK] Output: {output_dir}")
+
+    print("\n[INFO] Coverage:")
+    for k, v in coverage_meta.items():
+        print(f"  {k}: {v}")
+
     print("\n[INFO] Summary:")
     if not df_summary.empty:
         print(df_summary.to_string(index=False))
