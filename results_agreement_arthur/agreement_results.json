@@ -358,5 +358,81 @@
         ]
       }
     }
+  ],
+  "run_calibration": true,
+  "calibration_methods": [
+    "sigmoid",
+    "isotonic"
+  ],
+  "calibration_modes": [
+    "correctness"
+  ],
+  "continuous_tolerance": 0.1,
+  "calibration_bins": 10,
+  "calibration_cv_folds": 5,
+  "calibration_prep_infos": [
+    {
+      "annotator": "Arthur",
+      "task": "stance_intensity",
+      "mode": "correctness",
+      "status": "ok",
+      "reason": null,
+      "n_rows_input": 400,
+      "n_rows_output": 350
+    },
+    {
+      "annotator": "Arthur",
+      "task": "epistemic_modality",
+      "mode": "correctness",
+      "status": "ok",
+      "reason": null,
+      "n_rows_input": 400,
+      "n_rows_output": 335
+    },
+    {
+      "annotator": "Arthur",
+      "task": "justification_density",
+      "mode": "correctness",
+      "status": "ok",
+      "reason": null,
+      "n_rows_input": 400,
+      "n_rows_output": 148
+    },
+    {
+      "annotator": "Arthur",
+      "task": "responsiveness",
+      "mode": "correctness",
+      "status": "ok",
+      "reason": null,
+      "n_rows_input": 400,
+      "n_rows_output": 354
+    },
+    {
+      "annotator": "Arthur",
+      "task": "agreement",
+      "mode": "correctness",
+      "status": "ok",
+      "reason": null,
+      "n_rows_input": 400,
+      "n_rows_output": 347
+    },
+    {
+      "annotator": "Arthur",
+      "task": "civility",
+      "mode": "correctness",
+      "status": "ok",
+      "reason": null,
+      "n_rows_input": 400,
+      "n_rows_output": 355
+    },
+    {
+      "annotator": "Arthur",
+      "task": "sarcasm",
+      "mode": "correctness",
+      "status": "ok",
+      "reason": null,
+      "n_rows_input": 400,
+      "n_rows_output": 340
+    }
   ]
 }

@@ -1,0 +1,8 @@
+annotator,task,mode,status,reason,n_rows_input,n_rows_output
+Arthur,stance_intensity,correctness,ok,,400,350
+Arthur,epistemic_modality,correctness,ok,,400,335
+Arthur,justification_density,correctness,ok,,400,148
+Arthur,responsiveness,correctness,ok,,400,354
+Arthur,agreement,correctness,ok,,400,347
+Arthur,civility,correctness,ok,,400,355
+Arthur,sarcasm,correctness,ok,,400,340
