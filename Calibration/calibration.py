@@ -4,7 +4,8 @@
 """
 calibration.py
 
-Startbeispiel
+Start
+
 -------------
 python calibration.py \
   --human_excel "/Users/arthur/DataspellProjects/reddit-l/data/sampled_threads.xlsx" \
