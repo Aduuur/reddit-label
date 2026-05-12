@@ -365,7 +365,8 @@
     "isotonic"
   ],
   "calibration_modes": [
-    "correctness"
+    "correctness",
+    "label"
   ],
   "continuous_tolerance": 0.1,
   "calibration_bins": 10,
@@ -382,12 +383,30 @@
     },
     {
       "annotator": "Arthur",
+      "task": "stance_intensity",
+      "mode": "label",
+      "status": "skipped",
+      "reason": "label_mode_only_supported_for_binary_tasks",
+      "n_rows_input": 400,
+      "n_rows_output": 0
+    },
+    {
+      "annotator": "Arthur",
       "task": "epistemic_modality",
       "mode": "correctness",
       "status": "ok",
       "reason": null,
       "n_rows_input": 400,
       "n_rows_output": 335
+    },
+    {
+      "annotator": "Arthur",
+      "task": "epistemic_modality",
+      "mode": "label",
+      "status": "skipped",
+      "reason": "label_mode_only_supported_for_binary_tasks",
+      "n_rows_input": 400,
+      "n_rows_output": 0
     },
     {
       "annotator": "Arthur",
@@ -400,12 +419,30 @@
     },
     {
       "annotator": "Arthur",
+      "task": "justification_density",
+      "mode": "label",
+      "status": "skipped",
+      "reason": "label_mode_only_supported_for_binary_tasks",
+      "n_rows_input": 400,
+      "n_rows_output": 0
+    },
+    {
+      "annotator": "Arthur",
       "task": "responsiveness",
       "mode": "correctness",
       "status": "ok",
       "reason": null,
       "n_rows_input": 400,
       "n_rows_output": 354
+    },
+    {
+      "annotator": "Arthur",
+      "task": "responsiveness",
+      "mode": "label",
+      "status": "skipped",
+      "reason": "label_mode_only_supported_for_binary_tasks",
+      "n_rows_input": 400,
+      "n_rows_output": 0
     },
     {
       "annotator": "Arthur",
@@ -418,6 +455,15 @@
     },
     {
       "annotator": "Arthur",
+      "task": "agreement",
+      "mode": "label",
+      "status": "skipped",
+      "reason": "label_mode_only_supported_for_binary_tasks",
+      "n_rows_input": 400,
+      "n_rows_output": 0
+    },
+    {
+      "annotator": "Arthur",
       "task": "civility",
       "mode": "correctness",
       "status": "ok",
@@ -427,8 +473,26 @@
     },
     {
       "annotator": "Arthur",
+      "task": "civility",
+      "mode": "label",
+      "status": "skipped",
+      "reason": "label_mode_only_supported_for_binary_tasks",
+      "n_rows_input": 400,
+      "n_rows_output": 0
+    },
+    {
+      "annotator": "Arthur",
       "task": "sarcasm",
       "mode": "correctness",
+      "status": "ok",
+      "reason": null,
+      "n_rows_input": 400,
+      "n_rows_output": 340
+    },
+    {
+      "annotator": "Arthur",
+      "task": "sarcasm",
+      "mode": "label",
       "status": "ok",
       "reason": null,
       "n_rows_input": 400,

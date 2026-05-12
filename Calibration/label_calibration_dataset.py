@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import json
@@ -9,10 +7,11 @@ import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Set, Callable
 
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import requests
-
+from openai import OpenAI, APIConnectionError, APIStatusError
 
 # =============================================================================
 # Configuration
@@ -24,15 +23,19 @@ TIMEOUT_SECONDS = 60
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 1.5
 
+# HoreKa vLLM Server (via SSH-Tunnel)
+HOREKA_BASE_URL = "http://localhost:8000"
+HOREKA_MODEL = "/hkfs/work/workspace/scratch/unoim-llm_models/hf_cache/models/meta-llama/Llama-3.1-70B-Instruct"
+
+# Welches Backend nutzen? "horeka" oder "lmstudio"
+BACKEND = "horeka"
+
 try:
     BASE_DIR = Path(__file__).resolve().parent.parent
 except NameError:
     BASE_DIR = Path.cwd()
 
-EXCEL_PATH = Path(r"C:\Users\rolfa\DataspellProjects\reddit\reddit-label\data\sampled_threads.xlsx")
-
-if not EXCEL_PATH.exists():
-    EXCEL_PATH = Path.cwd() / "sampled_threads.xlsx"
+EXCEL_PATH = Path("../data/sampled_threads.xlsx")
 
 OUTPUT_NDJSON = Path.cwd() / "labels_from_excel.ndjson"
 
@@ -143,7 +146,7 @@ IMPORTANT:
 Stance intensity (ordinal; [1,6])
 --------------------------------------------------
 TASK: Extract the topic of this comment and then based on the topic the author's stance
-on a 1–6 scale on this topic (1 = strongly against, 3–4 = neutral/unclear, 6 = strongly in favor).
+on a 1-6 scale on this topic (1 = strongly against, 3-4 = neutral/unclear, 6 = strongly in favor).
 
 Use "ABSTAIN" if:
 - there is no clear evidence of stance toward the topic, or
@@ -217,7 +220,7 @@ JSON schema:
 }
 
 --------------------------------------------------
-Civility (ordinal 1–6)
+Civility (ordinal 1-6)
 --------------------------------------------------
 TASK: Rate civility on 1 (highly uncivil/insulting) to 6 (highly civil).
 
@@ -298,56 +301,34 @@ ARG_USER_TEMPLATE = (
 # =============================================================================
 
 def _clean_column_name(x: Any) -> str:
-    """
-    Normalize a column name into a stable snake_case-like identifier.
-    """
     s = "" if x is None else str(x)
     s = s.strip()
-    s = s.replace("\n", " ")
-    s = s.replace("\r", " ")
-    s = s.replace("[", " ")
-    s = s.replace("]", " ")
-    s = s.replace("(", " ")
-    s = s.replace(")", " ")
-    s = s.replace(",", "_")
-    s = s.replace("/", "_")
+    s = s.replace("\n", " ").replace("\r", " ")
+    s = s.replace("[", " ").replace("]", " ")
+    s = s.replace("(", " ").replace(")", " ")
+    s = s.replace(",", "_").replace("/", "_")
     s = re.sub(r"\s+", "_", s)
     s = re.sub(r"[^A-Za-z0-9_\-]", "", s)
-    s = s.strip("_").lower()
-    return s
+    return s.strip("_").lower()
 
 
 def _deduplicate_columns(cols: List[str]) -> List[str]:
-    """
-    Make duplicate column names unique by appending __2, __3, ...
-    """
     counts: Dict[str, int] = {}
     out: List[str] = []
     for c in cols:
         base = c if c else "unnamed"
         counts[base] = counts.get(base, 0) + 1
-        if counts[base] == 1:
-            out.append(base)
-        else:
-            out.append(f"{base}__{counts[base]}")
+        out.append(base if counts[base] == 1 else f"{base}__{counts[base]}")
     return out
 
 
 def _looks_like_two_row_header(df_raw: pd.DataFrame) -> bool:
-    """
-    Heuristik für das konkrete Excelformat:
-    - Zeile 0 enthält Gruppennamen wie Arthur / Veronika
-    - Zeile 1 enthält eigentliche Spaltennamen wie comment_id / body / predecessor
-    """
     if len(df_raw) < 2:
         return False
-
     row0 = [str(x).strip().lower() for x in df_raw.iloc[0].tolist()]
     row1 = [str(x).strip().lower() for x in df_raw.iloc[1].tolist()]
-
     row1_has_core = any(x in {"comment_id", "body", "predecessor"} for x in row1)
     row0_has_groups = any(x in {"arthur", "veronika"} for x in row0)
-
     return row1_has_core or row0_has_groups
 
 
@@ -355,40 +336,19 @@ def load_excel_comments(
         excel_path: str | Path,
         sheet_name: Optional[str] = 0,
 ) -> pd.DataFrame:
-    """
-    Lädt das Excel-Sheet robust ein.
-
-    Unterstützt zwei Formate:
-    1) Normale Headerzeile
-    2) Zweizeilige Headerstruktur:
-       - erste Zeile: Gruppennamen (z. B. Arthur, Veronika)
-       - zweite Zeile: eigentliche Feldnamen
-
-    Ergebnis:
-    - DataFrame mit mindestens:
-        comment_id, body, predecessor
-    - alle übrigen Spalten bleiben erhalten
-    """
     excel_path = str(excel_path)
-
-    # Erst roh laden, um Headerstruktur zu erkennen
     raw = pd.read_excel(excel_path, sheet_name=sheet_name, header=None)
 
     if raw.empty:
         raise ValueError("Excel file is empty.")
 
     if _looks_like_two_row_header(raw):
-        # Zwei Kopfzeilen kombinieren:
-        # - bei Arthur/Veronika-Spalten sollen Präfixe dran
-        # - für comment_id/body/predecessor etc. nur die untere Zeile nutzen
         top = raw.iloc[0].tolist()
         bottom = raw.iloc[1].tolist()
-
         new_cols: List[str] = []
         for t, b in zip(top, bottom):
             t_clean = _clean_column_name(t)
             b_clean = _clean_column_name(b)
-
             if b_clean in {"comment_id", "best_topic_index", "body", "predecessor"}:
                 new_cols.append(b_clean)
             elif t_clean in {"arthur", "veronika"} and b_clean:
@@ -399,28 +359,22 @@ def load_excel_comments(
                 new_cols.append(t_clean)
             else:
                 new_cols.append("unnamed")
-
         new_cols = _deduplicate_columns(new_cols)
-
         df = raw.iloc[2:].copy()
         df.columns = new_cols
         df = df.reset_index(drop=True)
-
     else:
-        # Normales Excel mit einer Headerzeile
         df = pd.read_excel(excel_path, sheet_name=sheet_name)
         df.columns = _deduplicate_columns([_clean_column_name(c) for c in df.columns])
 
-    # Pflichtspalten prüfen
     required = {"comment_id", "body", "predecessor"}
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(
-            f"Missing required columns in Excel after parsing: {missing}\n"
-            f"Available columns: {list(df.columns)}"
+            f"Missing required columns after parsing: {missing}\n"
+            f"Available: {list(df.columns)}"
         )
 
-    # Typen säubern
     for col in df.columns:
         if df[col].dtype == "object":
             df[col] = df[col].astype("string")
@@ -437,9 +391,7 @@ def load_excel_comments(
 # =============================================================================
 
 def call_lmstudio_chat(messages: List[Dict[str, str]], temperature: float = 0.0) -> str:
-    """
-    Call LM Studio Chat Completions API and return raw text.
-    """
+    """LM Studio backend."""
     url = f"{LMSTUDIO_BASE_URL}/v1/chat/completions"
     payload = {
         "model": MODEL_NAME,
@@ -449,22 +401,54 @@ def call_lmstudio_chat(messages: List[Dict[str, str]], temperature: float = 0.0)
     }
     resp = requests.post(url, json=payload, timeout=TIMEOUT_SECONDS)
     resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"].strip()
+    return resp.json()["choices"][0]["message"]["content"].strip()
 
 
-def _is_number(x: Any) -> bool:
-    return isinstance(x, (int, float)) and not isinstance(x, bool)
+def call_horeka_chat(messages: List[Dict[str, str]], temperature: float = 0.0) -> str:
+    """
+    HoreKa vLLM backend via SSH-Tunnel.
+    Wirft requests.RequestException bei Verbindungsfehlern,
+    damit die Retry-Logik in annotate_one / extract_arguments greift.
+    """
+    try:
+        client = OpenAI(
+            base_url=f"{HOREKA_BASE_URL}/v1",
+            api_key="dummy",
+            timeout=120.0,
+        )
+        resp = client.chat.completions.create(
+            model=HOREKA_MODEL,
+            messages=messages,
+            temperature=temperature,
+        )
+        return resp.choices[0].message.content.strip()
+    except (APIConnectionError, APIStatusError) as e:
+        # In requests.RequestException umwandeln damit Retry-Logik greift
+        raise requests.RequestException(f"HoreKa connection error: {e}") from e
+    except Exception as e:
+        raise requests.RequestException(f"HoreKa unexpected error: {e}") from e
+
+
+def call_chat(messages: List[Dict[str, str]], temperature: float = 0.0) -> str:
+    """
+    Zentraler Dispatcher: nutzt BACKEND-Variable.
+    BACKEND = "horeka"    -> HoreKa vLLM
+    BACKEND = "lmstudio"  -> LM Studio lokal
+    """
+    if BACKEND == "horeka":
+        return call_horeka_chat(messages, temperature)
+    return call_lmstudio_chat(messages, temperature)
 
 
 # =============================================================================
 # Validation
 # =============================================================================
 
+def _is_number(x: Any) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
 def validate_response(task: str, obj: Dict[str, Any]) -> Optional[str]:
-    """
-    Validate a single task response against TASK_SPECS[task].
-    """
     spec = TASK_SPECS[task]
 
     if not isinstance(obj, dict):
@@ -489,16 +473,13 @@ def validate_response(task: str, obj: Dict[str, Any]) -> Optional[str]:
 
     if label_key is not None:
         val = obj.get(label_key)
-
         if isinstance(val, str):
             if spec.get("allow_abstain") and val == "ABSTAIN":
                 return None
             return f'"{label_key}" must be an integer in range or "ABSTAIN"'
-
         label_type = spec.get("label_type", (int,))
         if not isinstance(val, label_type):
             return f'"{label_key}" has wrong type (expected {label_type})'
-
         lo, hi = spec["score_range"]
         if not (lo <= float(val) <= hi):
             return f'"{label_key}" out of range [{lo}, {hi}]'
@@ -506,12 +487,10 @@ def validate_response(task: str, obj: Dict[str, Any]) -> Optional[str]:
 
     if score_key is not None:
         val = obj.get(score_key)
-
         if isinstance(val, str):
             if spec.get("allow_abstain") and val == "ABSTAIN":
                 return None
             return f'"{score_key}" must be a number or "ABSTAIN"'
-
         if not _is_number(val):
             return f'"{score_key}" must be a number'
         lo, hi = spec["score_range"]
@@ -523,22 +502,15 @@ def validate_response(task: str, obj: Dict[str, Any]) -> Optional[str]:
 
 
 def validate_arguments(obj: Dict[str, Any]) -> Optional[str]:
-    """
-    Validate the argument_extraction response.
-    """
     if not isinstance(obj, dict):
         return "Response is not a JSON object"
-
     if obj.get("task") != "argument_extraction":
         return 'Field "task" must be "argument_extraction"'
-
     if "arguments" not in obj or "confidence" not in obj:
         return "Missing required keys: 'arguments' and/or 'confidence'"
-
     args = obj["arguments"]
     if not isinstance(args, list):
         return '"arguments" must be a list'
-
     for i, a in enumerate(args):
         if not isinstance(a, dict):
             return f'"arguments[{i}]" must be an object with keys "claim" and "proof"'
@@ -548,13 +520,11 @@ def validate_arguments(obj: Dict[str, Any]) -> Optional[str]:
             return f'"arguments[{i}].claim" must be a string'
         if not isinstance(a["proof"], str):
             return f'"arguments[{i}].proof" must be a string'
-
     conf = obj["confidence"]
     if not _is_number(conf):
         return '"confidence" must be a number'
     if not (0.0 <= conf <= 1.0):
         return '"confidence" must be in [0,1]'
-
     return None
 
 
@@ -563,9 +533,6 @@ def validate_arguments(obj: Dict[str, Any]) -> Optional[str]:
 # =============================================================================
 
 def build_user_prompt(task: str, text: str, parent_text: Optional[str] = None) -> str:
-    """
-    Compose the user message for labeling tasks.
-    """
     parts: Dict[str, Any] = {"TEXT": text}
     if parent_text is not None and str(parent_text).strip():
         parts["PARENT_TEXT"] = str(parent_text)
@@ -583,9 +550,6 @@ def build_argument_prompt(text: str, parent_text: Optional[str] = None) -> str:
 # =============================================================================
 
 def annotate_one(task: str, text: str, parent_text: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Run a single labeling task with retries and strict JSON validation.
-    """
     last_err: Optional[str] = None
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -594,8 +558,7 @@ def annotate_one(task: str, text: str, parent_text: Optional[str] = None) -> Dic
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": build_user_prompt(task, text, parent_text)},
             ]
-            raw = call_lmstudio_chat(messages, temperature=0.0)
-
+            raw = call_chat(messages, temperature=0.0)
             obj = json.loads(raw)
             err = validate_response(task, obj)
             if err is None:
@@ -609,16 +572,10 @@ def annotate_one(task: str, text: str, parent_text: Optional[str] = None) -> Dic
 
         time.sleep(RETRY_BACKOFF_SECONDS ** attempt)
 
-    return {
-        "task": task,
-        "error": last_err or "Unknown error",
-    }
+    return {"task": task, "error": last_err or "Unknown error"}
 
 
 def extract_arguments(text: str, parent_text: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Run argument extraction with retries and strict JSON validation.
-    """
     last_err: Optional[str] = None
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -627,7 +584,7 @@ def extract_arguments(text: str, parent_text: Optional[str] = None) -> Dict[str,
                 {"role": "system", "content": ARG_SYSTEM_PROMPT},
                 {"role": "user", "content": build_argument_prompt(text, parent_text)},
             ]
-            raw = call_lmstudio_chat(messages, temperature=0.0)
+            raw = call_chat(messages, temperature=0.0)
             obj = json.loads(raw)
             err = validate_arguments(obj)
             if err is None:
@@ -641,10 +598,7 @@ def extract_arguments(text: str, parent_text: Optional[str] = None) -> Dict[str,
 
         time.sleep(RETRY_BACKOFF_SECONDS ** attempt)
 
-    return {
-        "task": "argument_extraction",
-        "error": last_err or "Unknown error",
-    }
+    return {"task": "argument_extraction", "error": last_err or "Unknown error"}
 
 
 # =============================================================================
@@ -656,13 +610,9 @@ def write_ndjson_line(fp, obj: Dict[str, Any]) -> None:
 
 
 def _load_done_pairs(ndjson_path: str) -> Set[Tuple[str, str]]:
-    """
-    Read already processed (comment_id, task) pairs from an existing NDJSON file.
-    """
     done: Set[Tuple[str, str]] = set()
     if not os.path.exists(ndjson_path):
         return done
-
     with open(ndjson_path, "r", encoding="utf-8") as f:
         for line in f:
             try:
@@ -673,40 +623,30 @@ def _load_done_pairs(ndjson_path: str) -> Set[Tuple[str, str]]:
                     done.add((cid, task))
             except Exception:
                 continue
-
     return done
 
 
 def _jsonable(v: Any) -> Any:
-    """
-    Convert pandas / numpy scalars to plain Python types.
-    """
     if v is None:
         return None
-
     try:
         if pd.isna(v):
             return None
     except Exception:
         pass
-
     if isinstance(v, (np.integer, np.floating)):
         return v.item()
-
     return v
 
 
 def _make_abstain_result(task: str, reason: str = "EMPTY_BODY") -> Dict[str, Any]:
-    """
-    Create a schema-like ABSTAIN result without calling the model.
-    """
     if task in {"civility", "sarcasm"}:
         return {"task": task, "label": "ABSTAIN", "confidence": 0.0, "note": reason}
     return {"task": task, "score": "ABSTAIN", "confidence": 0.0, "note": reason}
 
 
 # =============================================================================
-# Main pipeline for Excel / DataFrame input
+# Main pipeline
 # =============================================================================
 
 def label_excel_dataframe(
@@ -722,16 +662,9 @@ def label_excel_dataframe(
         skip_existing: bool = True,
         progress: Optional[Callable[[int, int, Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
-    """
-    Label a DataFrame loaded from Excel.
-
-    Wichtiger Unterschied:
-    - predecessor_col enthält bereits den tatsächlichen Parent-/Vorgängertext
-    - daher kein lookup über parent_id
-    """
-    assert id_col in df.columns, f"Column '{id_col}' is missing in the DataFrame."
-    assert text_col in df.columns, f"Column '{text_col}' is missing in the DataFrame."
-    assert predecessor_col in df.columns, f"Column '{predecessor_col}' is missing in the DataFrame."
+    assert id_col in df.columns, f"Column '{id_col}' missing."
+    assert text_col in df.columns, f"Column '{text_col}' missing."
+    assert predecessor_col in df.columns, f"Column '{predecessor_col}' missing."
 
     if tasks is None:
         tasks = list(TASK_SPECS.keys())
@@ -741,15 +674,10 @@ def label_excel_dataframe(
         end_index = n_total
     if start_index < 0:
         start_index = 0
-
     if start_index >= end_index:
-        return {
-            "processed_rows": 0,
-            "written_records": 0,
-            "skipped_records": 0,
-            "errors": 0,
-            "note": "Nothing to process (start_index >= end_index).",
-        }
+        return {"processed_rows": 0, "written_records": 0,
+                "skipped_records": 0, "errors": 0,
+                "note": "Nothing to process (start_index >= end_index)."}
 
     already_done: Set[Tuple[str, str]] = set()
     if skip_existing:
@@ -771,25 +699,22 @@ def label_excel_dataframe(
                 predecessor_text = (
                     str(row[predecessor_col]) if pd.notna(row[predecessor_col]) else None
                 )
-
                 if predecessor_text is not None and not predecessor_text.strip():
                     predecessor_text = None
 
-                meta = {}
-                for c in df.columns:
-                    if c in {id_col, text_col, predecessor_col}:
-                        continue
-                    meta[c] = _jsonable(row[c]) if c in row.index else None
+                meta = {
+                    c: (_jsonable(row[c]) if c in row.index else None)
+                    for c in df.columns
+                    if c not in {id_col, text_col, predecessor_col}
+                }
 
-                # Empty body -> no LLM calls
+                # Empty body -> ABSTAIN ohne LLM-Aufruf
                 if (not comment_id) or (not text) or (not text.strip()):
                     arguments, arg_conf, arg_err = [], None, "EMPTY_BODY"
-
                     for task in tasks:
                         if skip_existing and (comment_id, task) in already_done:
                             skipped_records += 1
                             continue
-
                         out = {
                             "comment_id": comment_id,
                             "body": text,
@@ -804,42 +729,32 @@ def label_excel_dataframe(
                         }
                         write_ndjson_line(fp, out)
                         written_records += 1
-
                         if written_records % 100 == 0:
                             fp.flush()
-
                     processed_rows += 1
                     if progress:
-                        progress(
-                            processed_rows,
-                            end_index - start_index,
-                            {
-                                "written_records": written_records,
-                                "skipped_records": skipped_records,
-                                "errors": error_count,
-                            },
-                            )
+                        progress(processed_rows, end_index - start_index,
+                                 {"written_records": written_records,
+                                  "skipped_records": skipped_records,
+                                  "errors": error_count})
                     continue
 
-                # Argument extraction once per comment
+                # Argument extraction
                 arg_res = extract_arguments(text, parent_text=predecessor_text)
                 if "error" in arg_res:
-                    arguments = []
-                    arg_conf = None
-                    arg_err = arg_res["error"]
+                    arguments, arg_conf, arg_err = [], None, arg_res["error"]
                 else:
                     arguments = arg_res.get("arguments", [])
                     arg_conf = arg_res.get("confidence", None)
                     arg_err = None
 
+                # Labeling tasks
                 for task in tasks:
                     if skip_existing and (comment_id, task) in already_done:
                         skipped_records += 1
                         continue
-
                     try:
                         result = annotate_one(task, text, parent_text=predecessor_text)
-
                         out = {
                             "comment_id": comment_id,
                             "body": text,
@@ -854,25 +769,17 @@ def label_excel_dataframe(
                         }
                         write_ndjson_line(fp, out)
                         written_records += 1
-
                         if written_records % 100 == 0:
                             fp.flush()
-
                     except Exception:
                         error_count += 1
 
                 processed_rows += 1
-
                 if progress:
-                    progress(
-                        processed_rows,
-                        end_index - start_index,
-                        {
-                            "written_records": written_records,
-                            "skipped_records": skipped_records,
-                            "errors": error_count,
-                        },
-                        )
+                    progress(processed_rows, end_index - start_index,
+                             {"written_records": written_records,
+                              "skipped_records": skipped_records,
+                              "errors": error_count})
 
     return {
         "processed_rows": processed_rows,
@@ -896,25 +803,12 @@ def label_excel_file(
         skip_existing: bool = True,
         progress: Optional[Callable[[int, int, Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
-    """
-    Convenience wrapper:
-    - load Excel
-    - run labeling pipeline
-    """
     df = load_excel_comments(excel_path, sheet_name=sheet_name)
-
     return label_excel_dataframe(
-        df=df,
-        tasks=tasks,
-        ndjson_path=ndjson_path,
-        id_col=id_col,
-        text_col=text_col,
-        predecessor_col=predecessor_col,
-        batch_size=batch_size,
-        start_index=start_index,
-        end_index=end_index,
-        skip_existing=skip_existing,
-        progress=progress,
+        df=df, tasks=tasks, ndjson_path=ndjson_path,
+        id_col=id_col, text_col=text_col, predecessor_col=predecessor_col,
+        batch_size=batch_size, start_index=start_index, end_index=end_index,
+        skip_existing=skip_existing, progress=progress,
     )
 
 
@@ -923,28 +817,17 @@ def label_excel_file(
 # =============================================================================
 
 if __name__ == "__main__":
+    print(f"Backend: {BACKEND}")
+
     tasks = [
-        "stance_intensity",
-        "civility",
-        "epistemic_modality",
-        "justification_density",
-        "responsiveness",
-        "agreement",
-        "sarcasm",
+        "stance_intensity", "civility", "epistemic_modality",
+        "justification_density", "responsiveness", "agreement", "sarcasm",
     ]
 
     def simple_progress(done: int, total: int, stats: Dict[str, Any]) -> None:
         if done % 100 == 0 or done == total:
-            print(
-                f"[{done}/{total}] "
-                f"written={stats['written_records']} "
-                f"skipped={stats['skipped_records']} "
-                f"errors={stats['errors']}"
-            )
-
-    # Optional: vorher alte Datei löschen, wenn du wirklich neu starten willst
-    # if os.path.exists(OUTPUT_NDJSON):
-    #     os.remove(OUTPUT_NDJSON)
+            print(f"[{done}/{total}] written={stats['written_records']} "
+                  f"skipped={stats['skipped_records']} errors={stats['errors']}")
 
     df_preview = load_excel_comments(EXCEL_PATH)
     print("Loaded Excel successfully.")
@@ -954,17 +837,20 @@ if __name__ == "__main__":
     stats = label_excel_file(
         excel_path=EXCEL_PATH,
         tasks=tasks,
-        ndjson_path=OUTPUT_NDJSON,
+        ndjson_path=str(OUTPUT_NDJSON),
         sheet_name=0,
         id_col="comment_id",
         text_col="body",
         predecessor_col="predecessor",
         batch_size=100,
         start_index=0,
-        end_index=None,       # oder z. B. 300
+        end_index=None,
         skip_existing=True,
         progress=simple_progress,
     )
 
     print("Labeling finished.")
     print(stats)
+#%%
+
+#%%
