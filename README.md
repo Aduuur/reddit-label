@@ -1,5 +1,7 @@
 # reddit-label
 
+Lokale Daten zu LSDF: scp Dateiname SHH-Login:/lsdf/kit/itz/projects/delib_lab/
+
 The data used in this repo was downloaded from
 
 https://arctic-shift.photon-reddit.com/download-tool
