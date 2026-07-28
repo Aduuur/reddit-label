@@ -40,6 +40,7 @@ This pipeline was used on:
 - r/moderatepolitics
 - r/worldnews
 - r/socialjustice
+- r/politics
 
 ---
 
