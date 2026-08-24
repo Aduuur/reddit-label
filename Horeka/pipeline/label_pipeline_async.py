@@ -43,7 +43,7 @@ from prompts import (
     build_user_prompt,
     build_argument_prompt,
 )
-from data_io import load_input, is_empty, jsonable, load_done_pairs, is_too_short
+from data_io import load_input, is_empty, jsonable, load_done_pairs, count_tokens
 
 # =============================================================================
 # Defaults
@@ -235,26 +235,28 @@ async def process_comment(
     meta = {c: jsonable(row.get(c)) for c in all_cols
             if c not in {id_col, text_col, parent_col}}
 
-    # --- Deterministisches ABSTAIN: leerer ODER zu kurzer Text ---
-    # Bei zu kurzem Text (< MIN_TOKENS) labeln wir gar nicht erst per LLM,
-    # sondern setzen alle Tasks auf ABSTAIN. Das ist das EINZIGE Längen-Kriterium.
-    if not cid or not text.strip() or is_too_short(text):
-        reason = "EMPTY_BODY" if (not text.strip()) else "TOO_SHORT"
+    # Token-Anzahl als Feld mitschreiben, damit Länge NACHTRÄGLICH filterbar
+    # ist (statt über ABSTAIN). ABSTAIN gibt es nur noch bei fehlendem Parent.
+    n_tokens = count_tokens(text)
+
+    # Nur noch komplett leerer Text kürzt ab (kein Text -> nichts zu labeln).
+    if not cid or not text.strip():
         for task in tasks:
             if (cid, task) in done:
                 counter["skipped"] += 1
                 continue
             await queue.put({
                 "comment_id": cid, "body": text, "predecessor": parent,
-                "task": task, "result": _abstain(task, reason=reason), "arguments": [],
-                "arguments_confidence": None, "arguments_error": reason,
+                "n_tokens": n_tokens, "task": task,
+                "result": _abstain(task, reason="EMPTY_BODY"), "arguments": [],
+                "arguments_confidence": None, "arguments_error": "EMPTY_BODY",
                 "meta": meta,
             })
         counter["comments_done"] += 1
         return
 
-    # Tasks aufteilen: kontextabhängige Tasks OHNE Parent bekommen direkt
-    # ABSTAIN (fehlende Grundlage), alle anderen gehen ans Modell.
+    # Kontextabhängige Tasks OHNE Parent bekommen ABSTAIN (fehlende Grundlage).
+    # Alle anderen Tasks - unabhängig von der Länge - gehen ans Modell.
     CONTEXT_TASKS = {"responsiveness", "agreement"}
     no_parent = parent is None
     llm_tasks = []
@@ -262,10 +264,10 @@ async def process_comment(
         if (cid, task) in done:
             continue
         if no_parent and task in CONTEXT_TASKS:
-            # Kein Parent -> ABSTAIN ohne LLM-Call
             await queue.put({
                 "comment_id": cid, "body": text, "predecessor": parent,
-                "task": task, "result": _abstain(task, reason="NO_PARENT"),
+                "n_tokens": n_tokens, "task": task,
+                "result": _abstain(task, reason="NO_PARENT"),
                 "arguments": [], "arguments_confidence": None,
                 "arguments_error": "NO_PARENT", "meta": meta,
             })
@@ -273,13 +275,11 @@ async def process_comment(
         else:
             llm_tasks.append(task)
 
-    # Nichts ans Modell zu schicken? (alles schon erledigt oder als ABSTAIN gesetzt)
     if not llm_tasks:
         counter["comments_done"] += 1
         return
 
     async with sem:
-        # Argument-Extraktion einmal pro Kommentar
         arg_res = await extract_arguments(client, model, text, parent)
         if "error" in arg_res:
             arguments, arg_conf, arg_err = [], None, arg_res["error"]
@@ -288,7 +288,6 @@ async def process_comment(
             arg_conf = arg_res.get("confidence")
             arg_err = None
 
-        # Die zu labelnden Tasks parallel ans Modell
         results = await asyncio.gather(
             *[annotate_one(client, model, t, text, parent) for t in llm_tasks]
         )
@@ -297,7 +296,8 @@ async def process_comment(
                 counter["errors"] += 1
             await queue.put({
                 "comment_id": cid, "body": text, "predecessor": parent,
-                "task": task, "result": result, "arguments": arguments,
+                "n_tokens": n_tokens, "task": task,
+                "result": result, "arguments": arguments,
                 "arguments_confidence": arg_conf, "arguments_error": arg_err,
                 "meta": meta,
             })

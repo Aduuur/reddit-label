@@ -34,7 +34,7 @@ from prompts import (
     build_user_prompt,
     build_argument_prompt,
 )
-from data_io import load_input, is_empty, jsonable, load_done_pairs, is_too_short
+from data_io import load_input, is_empty, jsonable, load_done_pairs, count_tokens
 
 # =============================================================================
 # Defaults (per CLI überschreibbar)
@@ -244,18 +244,20 @@ def run(
                 if c not in {id_col, text_col, parent_col}
             }
 
-            # Deterministisches ABSTAIN: leerer ODER zu kurzer Text (< MIN_TOKENS)
-            if not cid or not text.strip() or is_too_short(text):
-                reason = "EMPTY_BODY" if (not text.strip()) else "TOO_SHORT"
+            # Token-Anzahl mitschreiben -> Länge nachträglich filterbar.
+            n_tokens = count_tokens(text)
+
+            # Nur noch leerer Text kürzt ab.
+            if not cid or not text.strip():
                 for task in tasks:
                     if skip_existing and (cid, task) in done:
                         skipped += 1
                         continue
                     fp.write(json.dumps({
                         "comment_id": cid, "body": text, "predecessor": parent,
-                        "comment_index": int(idx), "task": task,
-                        "result": _abstain(task, reason=reason), "arguments": [],
-                        "arguments_confidence": None, "arguments_error": reason,
+                        "comment_index": int(idx), "n_tokens": n_tokens, "task": task,
+                        "result": _abstain(task, reason="EMPTY_BODY"), "arguments": [],
+                        "arguments_confidence": None, "arguments_error": "EMPTY_BODY",
                         "meta": meta,
                     }, ensure_ascii=False) + "\n")
                     written += 1
@@ -275,7 +277,7 @@ def run(
                 if no_parent and task in CONTEXT_TASKS:
                     fp.write(json.dumps({
                         "comment_id": cid, "body": text, "predecessor": parent,
-                        "comment_index": int(idx), "task": task,
+                        "comment_index": int(idx), "n_tokens": n_tokens, "task": task,
                         "result": _abstain(task, reason="NO_PARENT"), "arguments": [],
                         "arguments_confidence": None, "arguments_error": "NO_PARENT",
                         "meta": meta,
@@ -305,7 +307,7 @@ def run(
                     result = annotate_one(client, model, task, text, parent)
                     fp.write(json.dumps({
                         "comment_id": cid, "body": text, "predecessor": parent,
-                        "comment_index": int(idx), "task": task,
+                        "comment_index": int(idx), "n_tokens": n_tokens, "task": task,
                         "result": result, "arguments": arguments,
                         "arguments_confidence": arg_conf, "arguments_error": arg_err,
                         "meta": meta,

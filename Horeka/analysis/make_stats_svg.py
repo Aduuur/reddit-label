@@ -1,6 +1,12 @@
 """
 make_stats_svg.py
 =================
+Wie make_stats.py, aber OHNE matplotlib - erzeugt SVG-Diagramme mit reinem
+Python (Standardbibliothek). Läuft überall, auch im Container ohne Extra-Pakete.
+
+SVG-Dateien öffnest du im Browser (Doppelklick) und kannst sie direkt in
+Folien/Docs einfügen oder als PNG exportieren (im Browser: Rechtsklick).
+
 Aufruf (auf HoreKa, KEIN Container nötig - pure Python):
     python3 make_stats_svg.py \
         --input  $(ws_find llm_run)/results/labels_test_300_resolved.ndjson \
