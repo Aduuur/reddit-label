@@ -35,9 +35,28 @@ else
     echo "Container schon vorhanden."
 fi
 
-echo "=== Modell kopieren (~132GB, dauert) ==="
-mkdir -p "$WS/$MODEL_REL"
-rsync -a --info=progress2 "$LSDF_PROJECT/$MODEL_REL/" "$WS/$MODEL_REL/"
+# Modelle in den Workspace kopieren. Standardmäßig werden alle Modelle unter
+# hf_cache/models/ mitgenommen, die in LSDF liegen (Llama, Qwen, ...). So ist
+# im Workspace immer jedes Modell verfügbar, egal mit welchem du labeln willst.
+# Mit MODELS_TO_SYNC kann man die Auswahl einschränken (Leerzeichen-getrennte
+# relative Pfade), z.B.:
+#   MODELS_TO_SYNC="hf_cache/models/Qwen/Qwen2.5-72B-Instruct" bash prepare_workspace.sh
+if [ -n "${MODELS_TO_SYNC:-}" ]; then
+    MODEL_LIST="$MODELS_TO_SYNC"
+else
+    # alle Modell-Ordner unter hf_cache/models/<org>/<name> automatisch finden
+    MODEL_LIST=$(cd "$LSDF_PROJECT" && find hf_cache/models -mindepth 2 -maxdepth 2 -type d 2>/dev/null)
+fi
+
+for MREL in $MODEL_LIST; do
+    if [ -d "$LSDF_PROJECT/$MREL" ]; then
+        echo "=== Modell kopieren: $MREL ==="
+        mkdir -p "$WS/$MREL"
+        rsync -a --info=progress2 "$LSDF_PROJECT/$MREL/" "$WS/$MREL/"
+    else
+        echo "WARNUNG: Modell $MREL nicht in LSDF gefunden, übersprungen."
+    fi
+done
 
 echo "=== Code kopieren ==="
 mkdir -p "$WS/code"

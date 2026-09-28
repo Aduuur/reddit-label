@@ -160,6 +160,8 @@ Agreement (continuous; [-1,1])
 TASK: Rate agreement with PARENT_TEXT. -1 = contradicts, 0 = neutral/unrelated, 1 = fully agrees.
 If PARENT_TEXT IS provided, always give a value (use low confidence when polarity is unclear).
 ONLY if PARENT_TEXT is absent, return "ABSTAIN" with confidence <= 0.2.
+CRITICAL: the numeric value MUST be under the key "score" (NOT "agreement", NOT "value").
+The negative range is allowed: e.g. {"task": "agreement", "score": -0.5, "confidence": 0.7}.
 JSON schema:
 { "task": "agreement", "score": <float in [-1.0,1.0] OR "ABSTAIN" only if no PARENT_TEXT>, "confidence": <float in [0,1]> }
 

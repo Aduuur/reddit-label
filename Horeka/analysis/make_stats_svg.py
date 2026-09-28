@@ -18,7 +18,7 @@ import argparse, json, sys, html
 from pathlib import Path
 from collections import defaultdict, Counter
 
-BLUE="#2E5496"; GREEN="#548235"; GRAY="#9AA0A6"; RED="#A61C00"; TEAL="#2A9D8F"; DARK="#333333"
+BLUE="#2E5496"; GREEN="#548235"; GRAY="#9AA0A6"; RED="#A61C00"; TEAL="#2A9D8F"; DARK="#333333"; ORANGE="#BF8F00"
 
 ALL_TASKS = ["stance_intensity","epistemic_modality","justification_density",
              "responsiveness","agreement","civility","sarcasm"]
@@ -175,6 +175,104 @@ def confidence_bars(path, tasks, by_task):
     s.append("</svg>")
     path.write_text("".join(s),encoding="utf-8")
 
+def n_tokens_of(r):
+    v = r.get("n_tokens")
+    return v if isinstance(v, (int, float)) else None
+
+
+def confidence_hist_by_length(path, rows, short_thr=15):
+    """Konfidenz-Verteilung in 10 Buckets, getrennt nach kurzen und langen
+    Kommentaren. Zeigt, ob das Modell bei kurzen Texten unsicherer ist."""
+    short = [0]*10
+    long = [0]*10
+    for r in rows:
+        v = val_of(r)
+        if v in ("ABSTAIN", "ERROR"):
+            continue
+        c = conf_of(r)
+        if c is None:
+            continue
+        b = min(int(c*10), 9)
+        nt = n_tokens_of(r)
+        if nt is not None and nt < short_thr:
+            short[b] += 1
+        else:
+            long[b] += 1
+    ks, ls = sum(short) or 1, sum(long) or 1
+    # Als Prozent pro Gruppe (damit vergleichbar trotz unterschiedlicher Menge)
+    short_p = [x/ks*100 for x in short]
+    long_p = [x/ls*100 for x in long]
+
+    W, H = 820, 420
+    left, right, top, bottom = 60, 130, 70, 60
+    plot_w = W-left-right
+    plot_h = H-top-bottom
+    maxv = max(max(short_p), max(long_p), 1)
+    nb = 10
+    gap = plot_w/nb
+    bw = gap*0.38
+    s = [svg_header_small(W, H, f"Konfidenz-Verteilung: kurz (<{short_thr} Tokens) vs. lang")]
+    s.append(f'<line x1="{left}" y1="{top+plot_h}" x2="{left+plot_w}" y2="{top+plot_h}" stroke="#ccc"/>')
+    labels = ["0-.1",".1-.2",".2-.3",".3-.4",".4-.5",".5-.6",".6-.7",".7-.8",".8-.9",".9-1"]
+    for i in range(nb):
+        x0 = left+i*gap+(gap-2*bw)/2
+        hs = plot_h*short_p[i]/maxv
+        hl = plot_h*long_p[i]/maxv
+        s.append(f'<rect x="{x0:.1f}" y="{top+plot_h-hs:.1f}" width="{bw:.1f}" height="{hs:.1f}" fill="{ORANGE}"/>')
+        s.append(f'<rect x="{x0+bw:.1f}" y="{top+plot_h-hl:.1f}" width="{bw:.1f}" height="{hl:.1f}" fill="{BLUE}"/>')
+        s.append(f'<text x="{x0+bw:.1f}" y="{top+plot_h+16}" font-size="9" text-anchor="middle" fill="{DARK}">{labels[i]}</text>')
+    # Legende
+    ly = top+6
+    s.append(f'<rect x="{left+plot_w+14}" y="{ly}" width="12" height="12" fill="{ORANGE}"/>')
+    s.append(f'<text x="{left+plot_w+30}" y="{ly+11}" font-size="12" fill="{DARK}">kurz</text>')
+    s.append(f'<rect x="{left+plot_w+14}" y="{ly+22}" width="12" height="12" fill="{BLUE}"/>')
+    s.append(f'<text x="{left+plot_w+30}" y="{ly+33}" font-size="12" fill="{DARK}">lang</text>')
+    s.append(f'<text x="{left-6}" y="{top-14}" font-size="11" fill="{GRAY}">% je Gruppe</text>')
+    s.append("</svg>")
+    path.write_text("".join(s), encoding="utf-8")
+
+
+def confidence_hist_per_task(path, tasks, by_task):
+    """Pro Task: Anteil der Labels in drei Konfidenz-Bändern (niedrig/mittel/hoch).
+    Zeigt, welche Dimensionen overconfident sind."""
+    LOW, MID = 0.5, 0.7
+    rows_data = []
+    for t in tasks:
+        cs = [conf_of(r) for r in by_task[t] if val_of(r) not in ("ABSTAIN","ERROR")]
+        cs = [c for c in cs if c is not None]
+        if not cs:
+            continue
+        n = len(cs)
+        lo = sum(1 for c in cs if c < LOW)/n*100
+        mi = sum(1 for c in cs if LOW <= c < MID)/n*100
+        hi = sum(1 for c in cs if c >= MID)/n*100
+        rows_data.append((t, lo, mi, hi))
+
+    W = 820
+    H = 60+len(rows_data)*44+50
+    left, right, top = 200, 40, 60
+    plot_w = W-left-right
+    s = [svg_header(W, H, "Konfidenz-Bänder je Dimension (Anteil der Labels)")]
+    for i, (t, lo, mi, hi) in enumerate(rows_data):
+        y = top+i*44
+        s.append(f'<text x="{left-10}" y="{y+18}" font-size="13" text-anchor="end" fill="{DARK}">{esc(t)}</text>')
+        x = left
+        for val, col in [(lo, RED), (mi, ORANGE), (hi, GREEN)]:
+            w = plot_w*val/100
+            s.append(f'<rect x="{x:.1f}" y="{y}" width="{w:.1f}" height="26" fill="{col}"/>')
+            if val >= 7:
+                s.append(f'<text x="{x+w/2:.1f}" y="{y+17}" font-size="10" text-anchor="middle" fill="white">{val:.0f}%</text>')
+            x += w
+    # Legende
+    ly = top+len(rows_data)*44+8
+    for lx, (col, lab) in zip([left, left+180, left+360],
+                              [(RED, "< 0.5 (Rateverdacht)"), (ORANGE, "0.5-0.7"), (GREEN, ">= 0.7 (sicher)")]):
+        s.append(f'<rect x="{lx}" y="{ly-11}" width="12" height="12" fill="{col}"/>')
+        s.append(f'<text x="{lx+18}" y="{ly}" font-size="11" fill="{DARK}">{esc(lab)}</text>')
+    s.append("</svg>")
+    path.write_text("".join(s), encoding="utf-8")
+
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--input",required=True,type=Path)
@@ -219,6 +317,13 @@ def main():
 
     confidence_bars(args.outdir/"03_konfidenz.svg", tasks, by_task)
     print("  geschrieben: 03_konfidenz.svg",flush=True)
+
+    # Neue Konfidenz-Diagramme
+    confidence_hist_by_length(args.outdir/"05_konfidenz_kurz_lang.svg", rows)
+    print("  geschrieben: 05_konfidenz_kurz_lang.svg",flush=True)
+
+    confidence_hist_per_task(args.outdir/"06_konfidenz_baender.svg", tasks, by_task)
+    print("  geschrieben: 06_konfidenz_baender.svg",flush=True)
 
     # Text-Tabelle
     with open(args.outdir/"zusammenfassung.txt","w",encoding="utf-8") as f:

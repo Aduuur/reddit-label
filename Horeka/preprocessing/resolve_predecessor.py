@@ -37,6 +37,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 
 def build_lookup(path: Path, id_col: str, text_col: str):
@@ -61,17 +62,31 @@ def build_lookup(path: Path, id_col: str, text_col: str):
     return lookup, total, skipped
 
 
+def build_post_body(obj: dict, title_col: str, selftext_col: str) -> Optional[str]:
+    """Setzt den Post-Text aus Titel + Selftext zusammen (für Top-Level-
+    Kommentare, deren Vorgänger der Post ist)."""
+    title = (obj.get(title_col) or "").strip()
+    selftext = (obj.get(selftext_col) or "").strip()
+    if title and selftext:
+        return f"{title}\n\n{selftext}"
+    return (title or selftext) or None
+
+
 def resolve(path_in: Path, path_out: Path, lookup: dict,
             id_col: str, parent_col: str, link_col: str,
-            text_col: str, pred_col: str):
+            text_col: str, pred_col: str,
+            title_col: str = "submission_title",
+            selftext_col: str = "submission_selftext"):
     """Zweiter Durchgang: predecessor eintragen und neue Datei schreiben."""
     stats = {
         "lines": 0, "skipped_json": 0,
         "resolved_from_comment": 0,   # Parent war ein Kommentar (aufgelöst)
-        "toplevel_post": 0,           # Parent == Post (kein Kommentar-Text)
+        "resolved_from_post": 0,      # Top-Level -> Post-Text als predecessor
+        "is_post": 0,                 # Post-Zeile selbst (kein predecessor)
+        "toplevel_no_text": 0,        # Top-Level, aber kein Post-Text vorhanden
         "parent_missing": 0,          # parent_id nicht in der Tabelle
         "already_had_pred": 0,        # predecessor war schon gesetzt
-        "no_parent_field": 0,         # gar keine parent_id vorhanden
+        "no_parent_field": 0,         # gar keine parent_id vorhanden (= Post)
     }
     with open(path_in, "r", encoding="utf-8") as fin, \
          open(path_out, "w", encoding="utf-8") as fout:
@@ -85,6 +100,13 @@ def resolve(path_in: Path, path_out: Path, lookup: dict,
                 stats["skipped_json"] += 1
                 continue
             stats["lines"] += 1
+
+            # Post-Zeile selbst (depth == -1 oder is_post): kein predecessor
+            if obj.get("is_post") is True or obj.get("depth") == -1:
+                obj[pred_col] = None
+                stats["is_post"] += 1
+                fout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                continue
 
             # Vorhandenes, nicht-leeres predecessor nicht überschreiben
             existing = obj.get(pred_col)
@@ -103,14 +125,19 @@ def resolve(path_in: Path, path_out: Path, lookup: dict,
                 parent = str(parent)
                 # Top-Level? parent zeigt auf den Post (== link_id)
                 if link is not None and parent == str(link):
-                    # Falls der Post ausnahmsweise doch als Zeile existiert,
-                    # nehmen wir seinen Text; sonst None.
                     if parent in lookup:
+                        # Post existiert als Zeile -> dessen Body nehmen
                         obj[pred_col] = lookup[parent]
                         stats["resolved_from_comment"] += 1
                     else:
-                        obj[pred_col] = None
-                        stats["toplevel_post"] += 1
+                        # Fallback: Post-Text aus Titel + Selftext zusammensetzen
+                        post_body = build_post_body(obj, title_col, selftext_col)
+                        if post_body:
+                            obj[pred_col] = post_body
+                            stats["resolved_from_post"] += 1
+                        else:
+                            obj[pred_col] = None
+                            stats["toplevel_no_text"] += 1
                 else:
                     # Parent ist ein Kommentar -> Text nachschlagen
                     if parent in lookup:
@@ -158,18 +185,22 @@ def main():
     print("=" * 60, flush=True)
     print("FERTIG. Statistik:", flush=True)
     print(f"  Zeilen geschrieben:            {stats['lines']}", flush=True)
-    print(f"  predecessor aufgelöst:         {stats['resolved_from_comment']}", flush=True)
-    print(f"  Top-Level (Parent = Post):     {stats['toplevel_post']}  -> predecessor leer", flush=True)
+    print(f"  predecessor aus Kommentar:     {stats['resolved_from_comment']}", flush=True)
+    print(f"  predecessor aus Post-Text:     {stats['resolved_from_post']}  (Top-Level -> Post)", flush=True)
+    print(f"  Post-Zeilen (kein predecessor):{stats['is_post']}", flush=True)
+    print(f"  Top-Level ohne Post-Text:      {stats['toplevel_no_text']}  -> predecessor leer", flush=True)
     print(f"  Parent-ID nicht gefunden:      {stats['parent_missing']}  -> predecessor leer", flush=True)
     print(f"  hatte schon predecessor:       {stats['already_had_pred']}", flush=True)
     print(f"  ohne parent_id-Feld:           {stats['no_parent_field']}", flush=True)
     if stats["skipped_json"]:
         print(f"  kaputte JSON-Zeilen:           {stats['skipped_json']}", flush=True)
-    resolved = stats["resolved_from_comment"]
-    if stats["lines"]:
-        pct = 100.0 * resolved / stats["lines"]
-        print(f"\n  => {resolved} von {stats['lines']} Kommentaren ({pct:.1f}%) "
-              f"haben jetzt einen Eltern-Text.", flush=True)
+    resolved = stats["resolved_from_comment"] + stats["resolved_from_post"]
+    # Kommentare = alle Zeilen minus die Post-Zeilen
+    n_comments = stats["lines"] - stats["is_post"]
+    if n_comments:
+        pct = 100.0 * resolved / n_comments
+        print(f"\n  => {resolved} von {n_comments} Kommentaren ({pct:.1f}%) "
+              f"haben jetzt einen Eltern-Text (Kommentar oder Post).", flush=True)
     print("=" * 60, flush=True)
 
 

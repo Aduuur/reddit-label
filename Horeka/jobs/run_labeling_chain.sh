@@ -97,6 +97,65 @@ fi
 echo "    Aktuell gelabelt: $CURRENT_LINES Zeilen"
 
 # ----------------------------------------------------------------------------
+# 2b. FRÜH-ABBRUCH: Ist schon alles fertig? Dann gar nicht erst den Server
+#     hochfahren. Das fängt das letzte (überflüssige) Kettenglied ab, das durch
+#     die frühe Einreihung (Schritt 2c) entstehen kann.
+# ----------------------------------------------------------------------------
+if [ "$CURRENT_LINES" -ge "$EXPECTED_LINES" ]; then
+    echo "============================================================"
+    echo "KETTE BEREITS FERTIG ($CURRENT_LINES >= $EXPECTED_LINES). Nichts zu tun."
+    echo "Nächster Schritt (Login-Node): bash $WS_CODE/sync_results_to_lsdf.sh"
+    echo "============================================================"
+    exit 0
+fi
+
+# ----------------------------------------------------------------------------
+# 2c. Folgejob JETZT SCHON einreihen (mit afterany-Abhängigkeit).
+#     Wichtig: Das geschieht VOR dem Server-Start und der Pipeline. Dadurch
+#     existiert der Folgejob auch dann, wenn DIESER Job nach 8h hart per
+#     TIMEOUT gekillt wird (dann werden spätere Zeilen nie erreicht).
+#     Der Folgejob startet erst, wenn dieser hier endet (afterany = egal wie).
+#     Ist am Ende alles fertig, beendet sich der Folgejob in Schritt 2b sofort.
+#
+#     Endlosschleifen-Schutz: Wir schreiben den Startstand in eine Datei. Der
+#     Folgejob vergleicht, ob der VORgänger Fortschritt gemacht hat; wenn zwei
+#     Jobs in Folge nichts schaffen, bricht die Kette ab.
+# ----------------------------------------------------------------------------
+PROGRESS_FILE="$WS_RESULTS/.chain_progress_${INPUT_NAME%.*}"
+STALL_FILE="$WS_RESULTS/.chain_stall_${INPUT_NAME%.*}"
+
+# Hat der Vorgänger Fortschritt gemacht? (Vergleich: Stand bei dessen Start)
+if [ -f "$PROGRESS_FILE" ]; then
+    PREV_START=$(cat "$PROGRESS_FILE" 2>/dev/null || echo 0)
+    if [ "$CURRENT_LINES" -le "$PREV_START" ]; then
+        # Kein Fortschritt seit dem letzten Job -> Stall-Zähler hoch
+        STALL=$(cat "$STALL_FILE" 2>/dev/null || echo 0)
+        STALL=$(( STALL + 1 ))
+        echo "$STALL" > "$STALL_FILE"
+        echo "[2c] WARNUNG: Kein Fortschritt seit letztem Job (Stall-Zähler: $STALL)."
+        if [ "$STALL" -ge 2 ]; then
+            echo "============================================================"
+            echo "ABBRUCH DER KETTE: Zwei Jobs in Folge ohne Fortschritt."
+            echo "Bitte server_*.log und chain_*.out prüfen."
+            echo "============================================================"
+            rm -f "$STALL_FILE" "$PROGRESS_FILE"
+            exit 1
+        fi
+    else
+        echo 0 > "$STALL_FILE"   # Fortschritt -> Stall-Zähler zurücksetzen
+    fi
+fi
+echo "$CURRENT_LINES" > "$PROGRESS_FILE"
+
+NEXT_JOB=$(sbatch --parsable \
+    --dependency=afterany:${SLURM_JOB_ID} \
+    --job-name=label_chain \
+    "$WS_CODE/run_labeling_chain.sh" "$INPUT_NAME" "$CONCURRENCY")
+echo "[2c] Folgejob vorab eingereiht: $NEXT_JOB (startet nach diesem Job, beendet"
+echo "     sich sofort, falls dieser Job alles fertigstellt)."
+echo "     Ganze Kette stoppen: scancel $NEXT_JOB (und ggf. diesen Job)."
+
+# ----------------------------------------------------------------------------
 # 3. vLLM-Server intern starten
 # ----------------------------------------------------------------------------
 export HF_HOME="$WS/hf_cache"
@@ -142,7 +201,8 @@ kill $SERVER_PID 2>/dev/null
 sleep 5
 
 # ----------------------------------------------------------------------------
-# 5. Vollständigkeit prüfen und ggf. Folgejob einreihen
+# 5. Status ausgeben. Das Einreihen des Folgejobs ist bereits in Schritt 2c
+#    passiert (vor der Pipeline, damit es einen TIMEOUT-Kill überlebt).
 # ----------------------------------------------------------------------------
 if [ -f "$OUTPUT_PATH" ]; then
     NEW_LINES=$(grep -cve '^[[:space:]]*$' "$OUTPUT_PATH")
@@ -153,36 +213,14 @@ echo "[5] Nach diesem Job: $NEW_LINES / $EXPECTED_LINES Zeilen"
 
 if [ "$NEW_LINES" -ge "$EXPECTED_LINES" ]; then
     echo "============================================================"
-    echo "KETTE FERTIG: Alle $EXPECTED_LINES Zeilen gelabelt."
-    echo "Nächster Schritt (Login-Node):"
-    echo "  bash $WS_CODE/sync_results_to_lsdf.sh"
+    echo "ALLE ZEILEN GELABELT ($NEW_LINES >= $EXPECTED_LINES)."
+    echo "Der vorab eingereihte Folgejob wird sich beim Start sofort beenden."
+    echo "Aufräumen der Ketten-Marker:"
+    rm -f "$PROGRESS_FILE" "$STALL_FILE"
+    echo "Nächster Schritt (Login-Node): bash $WS_CODE/sync_results_to_lsdf.sh"
     echo "============================================================"
-    exit 0
+else
+    REMAINING=$(( EXPECTED_LINES - NEW_LINES ))
+    echo "[5] Noch $REMAINING Zeilen offen -> der vorab eingereihte Folgejob macht weiter."
 fi
-
-# Fortschritts-Sicherung: Wenn dieser Job NICHTS Neues geschafft hat, brechen
-# wir die Kette ab, um Endlosschleifen bei einem echten Fehler zu vermeiden.
-if [ "$NEW_LINES" -le "$CURRENT_LINES" ]; then
-    echo "============================================================"
-    echo "ABBRUCH DER KETTE: Kein Fortschritt in diesem Job"
-    echo "  (vorher $CURRENT_LINES, jetzt $NEW_LINES Zeilen)."
-    echo "Bitte server_${SLURM_JOB_ID}.log und chain_${SLURM_JOB_ID}.out prüfen."
-    echo "============================================================"
-    exit 1
-fi
-
-# Noch Arbeit übrig UND Fortschritt gemacht -> Folgejob einreihen.
-# Der Folgejob startet erst wenn dieser hier fertig ist (afterany).
-REMAINING=$(( EXPECTED_LINES - NEW_LINES ))
-echo "[5] Noch $REMAINING Zeilen offen -> reihe Folgejob ein."
-
-NEXT_JOB=$(sbatch --parsable \
-    --dependency=afterany:${SLURM_JOB_ID} \
-    --job-name=label_chain \
-    "$WS_CODE/run_labeling_chain.sh" "$INPUT_NAME" "$CONCURRENCY")
-
-echo "============================================================"
-echo "Folgejob eingereiht: $NEXT_JOB (startet nach diesem Job)"
-echo "Kette abbrechen: scancel $NEXT_JOB"
-echo "============================================================"
 exit 0

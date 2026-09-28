@@ -12,19 +12,19 @@
 # KEIN SSH-Tunnel nötig - Server und Pipeline laufen auf demselben Node.
 #
 # Aufruf:
-#   sbatch run_labeling.sh INPUTNAME
+#   sbatch run_rationale.sh INPUTNAME [LIMIT]
 # Beispiel:
-#   sbatch run_labeling.sh conversation_threads_flat.ndjson
+#   sbatch run_labeling.sh test_threads_500.ndjson
 #
 # INPUTNAME ist der Dateiname in LSDF unter data/ (siehe LSDF_DATA).
 # =============================================================================
-#SBATCH --job-name=label_async
+#SBATCH --job-name=label_rat
 #SBATCH --partition=accelerated
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
-#SBATCH --time=08:00:00
-#SBATCH --output=label_%j.out
+#SBATCH --time=02:00:00
+#SBATCH --output=rationale_%j.out
 
 set -uo pipefail
 
@@ -35,23 +35,14 @@ LSDF_PROJECT=/lsdf/kit/itz/projects/delib_lab
 LSDF_DATA=$LSDF_PROJECT/data          # Input-Daten (LSDF)
 LSDF_CODE=$LSDF_PROJECT/code          # Pipeline-Code (LSDF)
 LSDF_RESULTS=$LSDF_PROJECT/results    # Ergebnisse (LSDF)
+MODEL_REL=hf_cache/models/meta-llama/Llama-3.1-70B-Instruct
 
-# Modellwahl über Umgebungsvariablen (Default: Llama, wie bisher).
-# Für Qwen den Job so starten:
-#   MODEL_REL=hf_cache/models/Qwen/Qwen2.5-72B-Instruct MODEL_NAME=qwen-72b \
-#     sbatch run_labeling_async.sh INPUT.ndjson 48
-MODEL_REL="${MODEL_REL:-hf_cache/models/meta-llama/Llama-3.1-70B-Instruct}"
-MODEL_NAME="${MODEL_NAME:-llama-70b}"
-
-# Fester Output-Name pro Input UND Modell (KEIN Zeitstempel) -> ermöglicht
-# nahtlose Wiederaufnahme und hält die Ergebnisse verschiedener Modelle
-# getrennt (labels_llama-70b_..., labels_qwen-72b_...).
-INPUT_NAME="${1:-conversation_threads_flat.ndjson}"
-OUTPUT_NAME="labels_${MODEL_NAME}_${INPUT_NAME%.*}.ndjson"
-
-# Concurrency = 2. Argument (Default 48). Höher = schneller, aber mehr
-# GPU-Speicherdruck. Bei OOM-Fehlern im Server-Log reduzieren.
-CONCURRENCY="${2:-48}"
+# Fester Output-Name pro Input (KEIN Zeitstempel) -> ermöglicht nahtlose
+# Wiederaufnahme: Ein abgebrochener Lauf wird beim erneuten sbatch fortgesetzt,
+# weil die Pipeline bereits gelabelte (comment_id, task)-Paare überspringt.
+INPUT_NAME="${1:-test_threads_500.ndjson}"
+OUTPUT_NAME="labels_rationale_${INPUT_NAME%.*}.ndjson"
+LIMIT="${2:-50}"   # nur die ersten N Kommentare (Default 50 für den Test)
 
 PORT=8000
 BASE_URL="http://localhost:${PORT}"
@@ -59,10 +50,8 @@ BASE_URL="http://localhost:${PORT}"
 echo "============================================================"
 echo "LABELING JOB   $(date)"
 echo "  Node:       $(hostname)"
-echo "  Modell:     $MODEL_REL  (served-name: $MODEL_NAME)"
 echo "  Input:      $INPUT_NAME"
 echo "  Output:     $OUTPUT_NAME"
-echo "  Concurrency: $CONCURRENCY"
 echo "============================================================"
 
 # ----------------------------------------------------------------------------
@@ -142,13 +131,13 @@ singularity exec --nv \
         --tensor-parallel-size 4 \
         --enforce-eager \
         --max-model-len 4096 \
-        --served-model-name "$MODEL_NAME" \
+        --served-model-name llama-70b \
         --port $PORT \
         --host 0.0.0.0 \
-    > "server_${SLURM_JOB_ID}.log" 2>&1 &
+    > "server_rat_${SLURM_JOB_ID}.log" 2>&1 &
 
 SERVER_PID=$!
-echo "     Server-PID: $SERVER_PID (Log: server_${SLURM_JOB_ID}.log)"
+echo "     Server-PID: $SERVER_PID (Log: server_rat_${SLURM_JOB_ID}.log)"
 
 # Sicherstellen dass der Server beim Job-Ende gekillt wird
 trap "echo 'Stoppe Server...'; kill $SERVER_PID 2>/dev/null" EXIT
@@ -160,13 +149,13 @@ echo "[4/5] Starte Label-Pipeline ..."
 singularity exec --nv \
     --bind "$WS:$WS" \
     "$WS/vllm.sif" \
-    python3 "$WS_CODE/label_pipeline_async.py" \
+    python3 "$WS_CODE/label_rationale.py" \
         --input "$INPUT_PATH" \
         --output "$OUTPUT_PATH" \
         --base-url "$BASE_URL" \
-        --model "$MODEL_NAME" \
-        --concurrency $CONCURRENCY \
-        --wait-server 900
+        --model llama-70b \
+        --wait-server 900 \
+        --limit "$LIMIT"
 
 PIPELINE_RC=$?
 echo "     Pipeline beendet mit Code $PIPELINE_RC"

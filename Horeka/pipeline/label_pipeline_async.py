@@ -65,6 +65,36 @@ def _is_number(x: Any) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool)
 
 
+def normalize_response(task: str, obj: Dict[str, Any]) -> Dict[str, Any]:
+    """Repariert häufige Feldnamen-Abweichungen, BEVOR validiert wird.
+    Das Modell schreibt den Wert manchmal unter dem Task-Namen (z.B.
+    "agreement": -0.5) oder unter "value"/"rating" statt unter dem im Schema
+    erwarteten "score"/"label". Wir ziehen den Wert dann in den richtigen
+    Schlüssel um. Verändert nur, wenn der erwartete Schlüssel fehlt."""
+    if not isinstance(obj, dict):
+        return obj
+    spec = TASK_SPECS.get(task, {})
+    target = spec.get("score_key") or spec.get("label_key")
+    if not target or target in obj:
+        return obj  # erwarteter Schlüssel ist da -> nichts zu tun
+
+    # Kandidaten-Schlüssel, unter denen der Wert stattdessen stehen könnte
+    candidates = [
+        task,                          # z.B. "agreement"
+        spec.get("task_value"),        # dasselbe, sicherheitshalber
+        "value", "rating", "result",
+        "label" if target == "score" else "score",  # vertauschte Variante
+    ]
+    for key in candidates:
+        if key and key in obj and key not in ("task", "confidence"):
+            val = obj[key]
+            # nur übernehmen, wenn es ein plausibler Wert ist (Zahl oder ABSTAIN)
+            if _is_number(val) or (isinstance(val, str) and val == "ABSTAIN"):
+                obj[target] = val
+                break
+    return obj
+
+
 def validate_response(task: str, obj: Dict[str, Any]) -> Optional[str]:
     spec = TASK_SPECS[task]
     if not isinstance(obj, dict):
@@ -135,6 +165,7 @@ async def _chat(client, model, messages) -> str:
 
 async def annotate_one(client, model, task, text, parent) -> Dict[str, Any]:
     last_err = None
+    last_raw = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             messages = [
@@ -142,7 +173,9 @@ async def annotate_one(client, model, task, text, parent) -> Dict[str, Any]:
                 {"role": "user", "content": build_user_prompt(task, text, parent)},
             ]
             raw = await _chat(client, model, messages)
+            last_raw = raw
             obj = json.loads(raw)
+            obj = normalize_response(task, obj)   # Feldnamen reparieren
             err = validate_response(task, obj)
             if err is None:
                 return obj
@@ -154,7 +187,10 @@ async def annotate_one(client, model, task, text, parent) -> Dict[str, Any]:
         except Exception as e:
             last_err = f"err({attempt}): {e}"
         await asyncio.sleep(RETRY_BACKOFF_BASE ** min(attempt, 4))
-    return {"task": task, "error": last_err or "unknown"}
+    # Bei endgültigem Fehler die letzte Rohantwort mitspeichern (gekürzt),
+    # damit die Ursache später nachvollziehbar ist.
+    return {"task": task, "error": last_err or "unknown",
+            "raw": (last_raw or "")[:500]}
 
 
 async def extract_arguments(client, model, text, parent) -> Dict[str, Any]:
